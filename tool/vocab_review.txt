@@ -1,0 +1,15 @@
+Clinical vocabulary generation review
+=====================================
+ICD-10-CM description lines: 74719
+RxNorm terms harvested: 62420
+Final vocabulary tokens: 17775
+
+Pruned — names/eponyms (71):
+alport, alzheimer, amber, arnold, barre, barrett, bartter, becker, behcet, bell, brown, budd, buerger, burkitt, charcot, chiari, colles, conn, creutzfeldt, crigler, crohn, cushing, down, dressler, duchenne, dupuytren, ebstein, ehlers, erb, fallot, fanconi, gaucher, gilbert, guillain, hill, hirschsprung, hodgkin, horner, huntington, jakob, june, kaposi, kawasaki, klinefelter, klumpke, legg, lyme, marfan, mark, may, meckel, meniere, najjar, niemann, parkinson, pick, ray, raynaud, reye, rose, sachs, sequard, sjogren, still, takayasu, tay, turner, wegener, whipple, wilson, young
+
+Pruned — demonyms/geography (32):
+african, american, asian, brazilian, california, chikungunya, chinese, colorado, congo, crimean, eastern, ebola, european, german, indian, italian, japanese, kyasanur, lassa, marburg, mexican, nile, northern, omsk, rocky, ross, russian, southern, spanish, venezuelan, western, zika
+
+Pruned — redactor-collisions (16):
+center, city, college, contact, district, father, guardian, hospital, husband, mobile, mother, road, sector, spouse, street, wife
+

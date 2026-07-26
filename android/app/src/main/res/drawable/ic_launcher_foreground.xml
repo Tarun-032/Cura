@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cura mark for the adaptive-icon foreground: ring + main dot + mint accent,
+     drawn in a 108dp canvas and inset to sit inside the adaptive safe zone.
+     Circles are expressed as arc paths (VectorDrawable has no <circle>). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Boundary ring (r34 → 27.2 after 0.8 inset), stroke only. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF00674F"
+        android:strokeWidth="3.2"
+        android:pathData="M26.8,54 a27.2,27.2 0 1,0 54.4,0 a27.2,27.2 0 1,0 -54.4,0" />
+    <!-- Main dot (r16 → 12.8), offset up-left. -->
+    <path
+        android:fillColor="#FF00674F"
+        android:pathData="M36.4,50.8 a12.8,12.8 0 1,0 25.6,0 a12.8,12.8 0 1,0 -25.6,0" />
+    <!-- Accent dot (r5 → 4.0), lower-right, bright mint. -->
+    <path
+        android:fillColor="#FF3EBB9E"
+        android:pathData="M58.8,64.4 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>

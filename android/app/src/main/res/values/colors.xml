@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cura "Emerald Calm" canvas background, used for the launch splash so the
+         open transitions seamlessly into the app with no white flash. -->
+    <color name="cura_canvas">#F4FAF7</color>
+</resources>

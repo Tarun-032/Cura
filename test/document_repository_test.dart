@@ -1,0 +1,80 @@
+import 'package:cura/core/data/app_database.dart';
+import 'package:cura/core/data/document_repository.dart';
+import 'package:cura/features/library/document.dart';
+import 'package:drift/native.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test('v3 database migration adds the nullable original PDF column', () async {
+    final executor = NativeDatabase.memory(
+      setup: (database) {
+        database.execute('''
+          CREATE TABLE documents (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            date INTEGER NOT NULL,
+            extracted_text TEXT NOT NULL DEFAULT '',
+            results TEXT NOT NULL DEFAULT '[]',
+            results_note TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
+            file_path TEXT,
+            file_paths TEXT
+          )
+        ''');
+        database.execute('PRAGMA user_version = 3');
+      },
+    );
+    final database = AppDatabase.forTesting(executor);
+    addTearDown(database.close);
+
+    final columns = await database
+        .customSelect('PRAGMA table_info(documents)')
+        .get();
+
+    expect(
+      columns.map((row) => row.read<String>('name')),
+      contains('source_pdf_path'),
+    );
+  });
+
+  test('persists the original PDF path alongside rendered pages', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    final repository = DocumentRepository(database);
+    final document = CuraDocument(
+      id: 'pdf-1',
+      title: 'Imported lab report',
+      type: DocumentType.lab,
+      date: DateTime(2026, 7, 15),
+      extractedText: 'Hemoglobin 14.2 g/dL',
+      pages: const ['/private/imports/pdf-1/pages/page-001.jpg'],
+      sourcePdfPath: '/private/imports/pdf-1/original.pdf',
+    );
+
+    await repository.add(document);
+    final stored = (await repository.watchDocuments().first).single;
+
+    expect(stored.pages, document.pages);
+    expect(stored.sourcePdfPath, document.sourcePdfPath);
+  });
+
+  test('camera and legacy-shaped records keep a null PDF path', () async {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(database.close);
+    final repository = DocumentRepository(database);
+
+    await repository.add(
+      CuraDocument(
+        id: 'scan-1',
+        title: 'Camera scan',
+        type: DocumentType.receipt,
+        date: DateTime(2026, 7, 15),
+        pages: const ['/private/scans/page.jpg'],
+      ),
+    );
+
+    final stored = (await repository.watchDocuments().first).single;
+    expect(stored.sourcePdfPath, isNull);
+  });
+}
