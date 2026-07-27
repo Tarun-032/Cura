@@ -90,18 +90,24 @@ class RemoteChatBackend {
     double temperature = 0.2,
     int maxTokens = 1024,
   }) async* {
-    // Last-point defence: even typed messages are rechecked before the request
-    // exists. Developer prompts are literals; every other origin must pass.
+    // Last-point defence: rebuild every non-developer message from the privacy
+    // transform immediately before JSON serialization. Callers cannot make an
+    // earlier sanitized/display copy diverge from the literal network payload.
+    const privacyGate = CloudPrivacyGate();
+    final outboundMessages = <Map<String, String>>[];
     for (final message in messages) {
-      if (message.origin == CloudMessageOrigin.developerLiteral) continue;
-      if (containsHardCloudRisk(message.content) ||
-          message.content.contains('▇') ||
-          message.content.contains('[REDACTED]')) {
+      final content = privacyGate.sanitizeAtOutboundBoundary(message).trim();
+      if (message.origin != CloudMessageOrigin.developerLiteral &&
+          (content.isEmpty ||
+              containsHardCloudRisk(content) ||
+              content.contains('▇') ||
+              content.contains('[REDACTED]'))) {
         throw const RemoteAiException(
           'Cura withheld this request because identifying information could not '
           'be removed safely.',
         );
       }
+      outboundMessages.add({'role': message.role, 'content': content});
     }
     final request = http.Request('POST', _endpoint)
       ..headers.addAll(_headers)
@@ -110,9 +116,7 @@ class RemoteChatBackend {
         'stream': true,
         'temperature': temperature,
         'max_tokens': maxTokens,
-        'messages': [
-          for (final m in messages) {'role': m.role, 'content': m.content},
-        ],
+        'messages': outboundMessages,
       });
 
     final http.StreamedResponse response;

@@ -630,4 +630,56 @@ You have 5 TB-related records:
       expect(g.source, isNull);
     });
   });
+
+  // A first-trimester screening report *is* an ultrasound, so its OCR names the
+  // modality just as well as a report actually titled "Ultrasound …". Sorting on
+  // date alone then hands every "the ultrasound report" question to whichever
+  // report is newest.
+  group('a named modality prefers the document titled with it', () {
+    final titled = _doc(
+      'titled',
+      DocumentType.imaging,
+      DateTime(2026, 7, 3),
+      title: 'Ultrasound PREGNANCY 1TRIM (GENETIC SCAN)',
+      text: 'Nuchal translucency 3.30 mm. Crown rump length 67.7 mm.',
+    );
+    final newerUntitled = _doc(
+      'newer',
+      DocumentType.imaging,
+      DateTime(2026, 7, 10),
+      title: 'FIRST TRIMESTER SCREENING',
+      text: 'Transabdominal ultrasound performed. Alive fetus, FHR 166 bpm.',
+    );
+
+    test('grounds on the titled report, not the newer one', () {
+      final g = groundingFor('explain the ultrasound report', [
+        newerUntitled,
+        titled,
+      ]);
+      expect(g.source?.id, 'titled');
+    });
+
+    test('a title match still loses to an explicit date', () {
+      final g = groundingFor('explain the ultrasound from July 10 2026', [
+        newerUntitled,
+        titled,
+      ]);
+      expect(g.source?.id, 'newer');
+    });
+
+    test('with no title match the newest still wins', () {
+      final other = _doc(
+        'other',
+        DocumentType.imaging,
+        DateTime(2026, 6, 1),
+        title: 'ANOMALY SCAN',
+        text: 'Ultrasound performed.',
+      );
+      final g = groundingFor('explain the ultrasound report', [
+        other,
+        newerUntitled,
+      ]);
+      expect(g.source?.id, 'newer');
+    });
+  });
 }

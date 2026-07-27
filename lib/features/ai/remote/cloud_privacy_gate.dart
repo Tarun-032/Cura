@@ -92,13 +92,25 @@ class CloudSafeText {
 class CloudPrivacyGate {
   const CloudPrivacyGate();
 
-  CloudSafeMessage userMessage(String text, {String role = 'user'}) {
-    final safe = redactConversationForCloud(text);
+  CloudSafeMessage userMessage(
+    String text, {
+    String role = 'user',
+    Set<String> knownIdentityTerms = const {},
+  }) {
+    final safe = redactConversationForCloud(
+      stripKnownIdentity(text, knownIdentityTerms),
+    );
     return CloudSafeMessage._(role, safe, CloudMessageOrigin.userAuthored);
   }
 
-  CloudSafeMessage documentMessage(String text, {String role = 'user'}) {
-    final safe = redactForCloud(text);
+  CloudSafeMessage documentMessage(
+    String text, {
+    String role = 'user',
+    Set<String> knownIdentityTerms = const {},
+  }) {
+    final safe = _sanitizeDocumentText(
+      stripKnownIdentity(text, knownIdentityTerms),
+    );
     return CloudSafeMessage._(role, safe, CloudMessageOrigin.documentDerived);
   }
 
@@ -106,8 +118,14 @@ class CloudPrivacyGate {
   /// quote report text: span scrubs, then per-line name-run deletion and a
   /// hard-risk drop. No whole-line drop on org words, which would erase benign
   /// answers and break the antecedents a follow-up relies on.
-  CloudSafeMessage assistantMessage(String text, {String role = 'assistant'}) {
-    final scrubbed = redactConversationForCloud(text);
+  CloudSafeMessage assistantMessage(
+    String text, {
+    String role = 'assistant',
+    Set<String> knownIdentityTerms = const {},
+  }) {
+    final scrubbed = redactConversationForCloud(
+      stripKnownIdentity(text, knownIdentityTerms),
+    );
     final kept = <String>[];
     for (final raw in scrubbed.split('\n')) {
       var line = raw.trim();
@@ -123,12 +141,59 @@ class CloudPrivacyGate {
     );
   }
 
+  /// Union of exact identities and quasi-identifiers read from every local
+  /// record. Ask applies this union to every document and history message, so an
+  /// identifier learned from one record cannot survive in another record's note.
+  Set<String> identityTermsForDocuments(List<CuraDocument> docs) => {
+    for (final document in docs) ...identityTermsFor(document.extractedText),
+  };
+
+  /// Final, idempotent transform used by the HTTP serializer. This deliberately
+  /// does not trust an earlier caller-side pass: the literal string that will be
+  /// encoded is scrubbed again according to its declared origin.
+  String sanitizeAtOutboundBoundary(CloudSafeMessage message) =>
+      switch (message.origin) {
+        CloudMessageOrigin.developerLiteral => message.content,
+        CloudMessageOrigin.userAuthored =>
+          redactConversationForCloud(message.content),
+        CloudMessageOrigin.documentDerived =>
+          _sanitizeDocumentText(message.content),
+      };
+
+  /// Scrubs cloud output before it can be displayed or persisted as chat
+  /// history. This removes exact local identities even if the model inferred or
+  /// reconstructed them instead of copying them from the prompt.
+  String responseText(
+    String text, {
+    Set<String> knownIdentityTerms = const {},
+  }) {
+    final scrubbed = redactConversationForCloud(
+      stripKnownIdentity(text, knownIdentityTerms),
+    );
+    final kept = <String>[];
+    for (final raw in scrubbed.split('\n')) {
+      final line = _sanitizeDocumentText(raw).trim();
+      if (line.isNotEmpty && !containsHardCloudRisk(line)) kept.add(line);
+    }
+    return kept.join('\n').trim();
+  }
+
+  String _sanitizeDocumentText(String text) {
+    final kept = <String>[];
+    for (final raw in redactForCloud(text).split('\n')) {
+      final line = deleteNameRuns(raw).text.trim();
+      if (line.isNotEmpty && !containsHardCloudRisk(line)) kept.add(line);
+    }
+    return kept.join('\n');
+  }
+
   /// Safe inventory for count/list/latest queries. A stored title is kept only
   /// when every token is clinical, else a canonical type title is used. Each line
   /// carries a scrubbed hint (see [_inventoryHint]) so topical questions are
   /// answered from real content rather than guessed from titles.
   CloudSafeText buildInventory(List<CuraDocument> docs) {
     final ordered = [...docs]..sort((a, b) => b.date.compareTo(a.date));
+    final identity = identityTermsForDocuments(ordered);
     final out = StringBuffer(
       'Complete record inventory (${ordered.length} total records):\n',
     );
@@ -139,7 +204,7 @@ class CloudPrivacyGate {
       if (title != d.title.trim()) {
         stats = stats + const CloudPrivacyStats(titlesReplaced: 1);
       }
-      final hint = _inventoryHint(d);
+      final hint = _inventoryHint(d, identity);
       final base = '[${i + 1}] $title — ${d.type.label} — ${d.dateLabel}';
       out.writeln(hint.isEmpty ? base : '$base — $hint');
     }
@@ -154,11 +219,15 @@ class CloudPrivacyGate {
   /// One scrubbed line describing what a report is about: the stored impression,
   /// else the first result rows, else a medical excerpt. Empty when nothing safe
   /// survives the same scrubs as the rest of the cloud payload.
-  String _inventoryHint(CuraDocument d) {
+  String _inventoryHint(CuraDocument d, Set<String> identity) {
+    final title = safeTitle(d);
     // 1) A stored note / impression (imaging, discharge, histopath, or any doc).
     final note = d.resultsNote?.trim() ?? '';
     if (note.isNotEmpty) {
-      final safe = _safeField(note.replaceAll('\n', ' '));
+      final safe = _safeField(
+        _preferMedicalLines(note, title).replaceAll('\n', ' '),
+        identity,
+      );
       if (safe.isNotEmpty) return _clipHint(safe);
     }
     // 2) Structured result rows → "Label: value" for the first few.
@@ -166,17 +235,17 @@ class CloudPrivacyGate {
       final rows = <String>[];
       for (final r in d.results) {
         if (r.needsReview) continue;
-        final label = _safeField(r.label);
-        if (label.isEmpty) continue;
-        final value = _safeField(r.value);
-        rows.add(value.isEmpty ? label : '$label: $value');
+        final row = _safeRow(r, identity);
+        if (row.isEmpty) continue;
+        rows.add(row);
         if (rows.length >= 4) break;
       }
       if (rows.isNotEmpty) return _clipHint(rows.join('; '));
     }
     // 3) A medical excerpt (letterhead / patient block already dropped).
     final excerpt = _safeField(
-      keepMedicalLines(d.extractedText, title: d.title).replaceAll('\n', ' '),
+      keepMedicalLines(d.extractedText, title: title).replaceAll('\n', ' '),
+      identity,
     );
     if (excerpt.isNotEmpty) return _clipHint(excerpt);
     return '';
@@ -191,6 +260,7 @@ class CloudPrivacyGate {
   CloudSafeText buildContext(List<CuraDocument> docs) {
     final out = StringBuffer();
     var stats = const CloudPrivacyStats();
+    final identity = identityTermsForDocuments(docs);
     for (var i = 0; i < docs.length; i++) {
       final d = docs[i];
       final title = safeTitle(d);
@@ -202,33 +272,36 @@ class CloudPrivacyGate {
       if (d.results.isNotEmpty) {
         final rows = <String>[];
         for (final result in d.results) {
-          final label = _safeField(result.label);
-          final value = _safeField(result.value);
-          final unit = result.unit == null ? null : _safeField(result.unit!);
-          final range = result.range == null ? null : _safeField(result.range!);
-          if (label.isEmpty || value.isEmpty) {
+          final row = _safeRow(result, identity);
+          if (row.isEmpty) {
             stats = stats + const CloudPrivacyStats(fieldsDropped: 1);
             continue;
           }
-          final measured = unit == null || unit.isEmpty
-              ? value
-              : '$value $unit';
-          rows.add(
-            '$label: $measured${range == null || range.isEmpty ? '' : ' ($range)'}',
-          );
+          rows.add(row);
         }
         if (rows.isNotEmpty) out.writeln('Results: ${rows.join('; ')}');
       }
 
+      // The stored summary takes the same medical-line allowlist as raw OCR,
+      // since it is built from the page and can carry letterhead the scanner
+      // swept up. A note with no clinical signal at all (a receipt purpose, a
+      // typed visit note) keeps the plain scrub instead of being erased.
       final note = d.resultsNote == null
           ? const CloudSafeText('', CloudPrivacyStats())
-          : _safeNarrative(d.resultsNote!);
+          : _safeNarrative(
+              _preferMedicalLines(d.resultsNote!, title),
+              identity: identity,
+            );
       if (note.text.isNotEmpty) out.writeln('Notes: ${note.text}');
       stats = stats + note.stats;
 
-      if (d.results.isEmpty) {
+      // Raw OCR is the last resort, not an addition. Where a note or a results
+      // table already carries the medical content, the page text only repeats it
+      // with the letterhead, footers and patient block attached.
+      if (d.results.isEmpty && note.text.isEmpty) {
         final narrative = _safeNarrative(
-          keepMedicalLines(d.extractedText, title: d.title),
+          keepMedicalLines(d.extractedText, title: title),
+          identity: identity,
         );
         if (narrative.text.isNotEmpty) out.writeln('Text: ${narrative.text}');
         stats = stats + narrative.stats;
@@ -272,7 +345,11 @@ class CloudPrivacyGate {
     final minimized = keepMedicalLines(ocr, title: title);
     // Log-only: scan narrative is never dropped on a high unknown ratio, since
     // parseScanExtraction re-validates every returned value anyway.
-    return _safeNarrative(minimized, dropOnHighRatio: false);
+    return _safeNarrative(
+      minimized,
+      dropOnHighRatio: false,
+      identity: identityTermsFor(ocr),
+    );
   }
 
   /// Sanitizes geometry-derived table evidence without the medical-line
@@ -282,6 +359,7 @@ class CloudPrivacyGate {
     if (serializedGrid.trim().isEmpty) {
       return const CloudSafeText('', CloudPrivacyStats());
     }
+    final identity = identityTermsFor(serializedGrid);
     final candidates = serializedGrid
         .split('\n')
         .where((line) => line.trim().isNotEmpty)
@@ -289,7 +367,7 @@ class CloudPrivacyGate {
     final kept = <String>[];
     var nameRuns = 0;
     for (final raw in candidates) {
-      var line = redactForCloud(raw).trim();
+      var line = redactForCloud(stripKnownIdentity(raw, identity)).trim();
       if (line.isEmpty || containsHardCloudRisk(line)) continue;
       final deleted = deleteNameRuns(line);
       nameRuns += deleted.runs;
@@ -310,32 +388,71 @@ class CloudPrivacyGate {
 
   String safeTitle(CuraDocument document) {
     final title = document.title.trim();
-    // Receipt titles are vendor descriptors, not patient identity, so they go
-    // verbatim unless they carry a hard identifier or a place. Name-run deletion
-    // is skipped: a multi-word vendor phrase must pass the strict gate.
+    // A vendor/facility name is correlatable health information too. Receipt
+    // titles are therefore canonicalized instead of being sent verbatim.
     if (document.type == DocumentType.receipt) {
-      if (title.isEmpty ||
-          containsHardCloudRisk(title) ||
-          containsPlaceName(title)) {
-        return _canonicalTitle(document);
-      }
-      return title;
+      return _canonicalTitle(document);
     }
     if (_isTitleSafeToSend(title)) return title;
     return _canonicalTitle(document);
   }
 
-  String _safeField(String source) {
-    final safe = redactForCloud(source).trim();
+  /// One results row as `label: value (range)`, or empty when the row is
+  /// identity rather than a finding.
+  ///
+  /// The row is scrubbed as a whole rather than cell by cell. A table parser
+  /// splits `Date of birth : 01/01/1990` into two strings, discarding the
+  /// separator that [containsHardCloudRisk] and the whole-line rules key on, so
+  /// a cell-by-cell scrub can never recognise a demographic row.
+  String _safeRow(DocumentResult result, Set<String> identity) {
+    if (isIdentityRowLabel(result.label)) return '';
+    final label = _safeField(result.label, identity);
+    final value = _safeField(result.value, identity);
+    if (label.isEmpty || value.isEmpty) return '';
+    final unit = result.unit == null
+        ? ''
+        : _safeField(result.unit!, identity);
+    final range = result.range == null
+        ? ''
+        : _safeField(result.range!, identity);
+    final measured = unit.isEmpty ? value : '$value $unit';
+    final row = '$label: $measured${range.isEmpty ? '' : ' ($range)'}';
+    // Age and sex survive the assembled-row check by design; both cells were
+    // already scrubbed above.
+    if (isKeptDemographicRowLabel(result.label)) {
+      return containsHardCloudRisk(measured) ? '' : row;
+    }
+    // Re-check the assembled row: the restored separator is what lets the
+    // labelled-identity rules fire.
+    final safe = _safeField(row, identity);
+    return safe == row ? row : '';
+  }
+
+  String _safeField(String source, [Set<String> identity = const {}]) {
+    final safe = redactForCloud(stripKnownIdentity(source, identity)).trim();
     if (safe.isEmpty || containsHardCloudRisk(safe)) return '';
-    return safe;
+    final deleted = deleteNameRuns(safe).text.trim();
+    if (deleted.isEmpty || containsHardCloudRisk(deleted)) return '';
+    return deleted;
+  }
+
+  /// The medical-line allowlist applied to [source], or [source] unchanged when
+  /// the allowlist keeps nothing. A clinical summary is minimized; a note that
+  /// is not clinical prose at all still gets the ordinary scrub.
+  String _preferMedicalLines(String source, String title) {
+    final minimized = keepMedicalLines(source, title: title);
+    return minimized.trim().isEmpty ? source : minimized;
   }
 
   /// Sanitizes document narrative line by line: line/inline scrubs, name-run
   /// deletion, then with [dropOnHighRatio] a whole-block fallback to structured
   /// facts when too much of what survives is non-clinical. Scan refinement
   /// passes it `false`, since parseScanExtraction re-validates anyway.
-  CloudSafeText _safeNarrative(String source, {bool dropOnHighRatio = true}) {
+  CloudSafeText _safeNarrative(
+    String source, {
+    bool dropOnHighRatio = true,
+    Set<String> identity = const {},
+  }) {
     if (source.trim().isEmpty) {
       return const CloudSafeText('', CloudPrivacyStats());
     }
@@ -348,7 +465,9 @@ class CloudPrivacyGate {
     var unknownTokens = 0;
     var nameRuns = 0;
     for (final line in candidates) {
-      var scrubbed = redactForCloud(line).trim();
+      var scrubbed = redactForCloud(
+        stripKnownIdentity(line, identity),
+      ).trim();
       if (scrubbed.isEmpty || containsHardCloudRisk(scrubbed)) continue;
       // Delete bare name-shaped runs riding on the kept medical line.
       final deleted = deleteNameRuns(scrubbed);

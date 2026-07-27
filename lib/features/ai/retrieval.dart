@@ -534,6 +534,20 @@ bool _docMatchesModality(CuraDocument d, _Modality m) {
   return m.synonyms.any(hay.contains);
 }
 
+/// Whether [d]'s *title* names modality [m].
+///
+/// A first-trimester screening report is an ultrasound, so its body text names
+/// the modality as strongly as a report actually titled "Ultrasound …". Only the
+/// title says the document is chiefly about it.
+bool _titleNamesModality(CuraDocument d, _Modality m) {
+  final title = d.title.toLowerCase();
+  return m.synonyms.any(title.contains);
+}
+
+/// Whether [d]'s title names document kind [t], by the same reasoning.
+bool _titleNamesType(CuraDocument d, DocumentType t) =>
+    detectDocumentType(d.title) == t;
+
 /// The imaging modality named in [q] — "ultrasound", "MRI scan", "X-ray"… — or
 /// null when it uses only a generic imaging word (or none). Public so the query
 /// router can count/label by modality (an "ultrasound" is not every imaging doc).
@@ -852,14 +866,14 @@ Grounding groundingFor(
     // (an MRI request must never be answered from an ultrasound).
     var candidates = docs.where((d) => d.type == type).toList();
     var label = type.label;
-    if (type == DocumentType.imaging) {
-      final modality = _namedImagingModality(q);
-      if (modality != null) {
-        label = modality.label;
-        candidates = candidates
-            .where((d) => _docMatchesModality(d, modality))
-            .toList();
-      }
+    final modality = type == DocumentType.imaging
+        ? _namedImagingModality(q)
+        : null;
+    if (modality != null) {
+      label = modality.label;
+      candidates = candidates
+          .where((d) => _docMatchesModality(d, modality))
+          .toList();
     }
 
     // Narrow by any date the question names ("the April 2nd ultrasound").
@@ -870,7 +884,16 @@ Grounding groundingFor(
           .toList();
       label = '$label from ${_queryDateLabel(qd)}';
     }
-    candidates.sort((a, b) => b.date.compareTo(a.date)); // newest first
+    // A report whose title names what was asked for outranks a newer one that
+    // only mentions it in the body. A date in the question is more specific
+    // still, so it has already narrowed the pool above.
+    bool titled(CuraDocument d) => modality == null
+        ? _titleNamesType(d, type)
+        : _titleNamesModality(d, modality);
+    candidates.sort((a, b) {
+      final byTitle = (titled(b) ? 1 : 0) - (titled(a) ? 1 : 0);
+      return byTitle != 0 ? byTitle : b.date.compareTo(a.date);
+    });
     if (candidates.isEmpty) {
       // Asked about a kind/modality/date they don't have → attach nothing and flag
       // it, so the model says it isn't on file rather than using an unrelated doc.

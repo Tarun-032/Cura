@@ -447,7 +447,8 @@ Reviewed by Dr. Grace Quinn
 
       final context = gate.buildContext([doc]).text;
       expect(context, contains('No focal lesion'));
-      expect(context, contains('Liver appears unremarkable'));
+      // The note covers the medical content, so the page text is not repeated.
+      expect(context, isNot(contains('Text:')));
       expect(context, isNot(contains('Amber Brown')));
       expect(context, isNot(contains('LH-1234')));
       expect(context, isNot(contains('MRN')));
@@ -709,17 +710,19 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       });
     });
 
-    test('receipt vendor title is sent verbatim (user opted into cloud)', () {
+    test('receipt vendor title is canonicalized, never sent', () {
+      // Where a patient shops is correlatable health information, so a vendor
+      // name is treated as identity even though the user opted into cloud.
       final doc = CuraDocument(
         id: 'fenwick',
         title: 'Fenwick Medical Stores invoice',
         type: DocumentType.receipt,
         date: DateTime(2026, 1, 21),
       );
-      expect(gate.safeTitle(doc), 'Fenwick Medical Stores invoice');
+      expect(gate.safeTitle(doc), isNot(contains('Fenwick')));
       final inventory = gate.buildInventory([doc]);
-      expect(inventory.text, contains('Fenwick Medical Stores invoice'));
-      expect(inventory.stats.titlesReplaced, 0);
+      expect(inventory.text, isNot(contains('Fenwick')));
+      expect(inventory.stats.titlesReplaced, 1);
     });
 
     test('receipt title with a place name is still canonicalized', () {
@@ -836,10 +839,304 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       }
     });
 
-    test('skips ALL-CAPS lines (capitalisation signal is dead)', () {
+    test('deletes ALL-CAPS name runs and keeps clinical caps', () {
       const line = 'GRACE QUINN HEMOGLOBIN 13 G/DL';
-      expect(deleteNameRuns(line).text, line);
-      expect(deleteNameRuns(line).runs, 0);
+      final out = deleteNameRuns(line);
+      expect(out.text, isNot(contains('GRACE')));
+      expect(out.text, isNot(contains('QUINN')));
+      expect(out.text, contains('HEMOGLOBIN'));
+      expect(out.runs, 1);
+    });
+
+    test('leaves ALL-CAPS clinical phrases alone', () {
+      for (final phrase in [
+        'MTB COMPLEX NOT DETECTED',
+        'COMPLETE BLOOD COUNT',
+        'LIVER FUNCTION TEST',
+        'HEMOGLOBIN 13 G/DL',
+      ]) {
+        expect(deleteNameRuns(phrase).text, phrase, reason: 'altered $phrase');
+      }
+    });
+  });
+
+  // A first-trimester report leaked the patient and the facility to the cloud
+  // provider. The identity was unlabelled, ALL-CAPS, and sat on lines that also
+  // carried clinical words, which cleared every layer of the barrier.
+  group('ALL-CAPS identity never reaches the cloud', () {
+    const gate = CloudPrivacyGate();
+    const patient = 'DOE JANE MARIE';
+    const facility = 'LAKEVIEW HOSPITAL & HEART INSTITUTE';
+
+    // What the scanner actually reads off the page: letterhead, patient block,
+    // then the clinical body.
+    const ocr =
+        '$facility\n'
+        'SECTOR 27, FAIRVIEW 999301\n'
+        'Patient Name : $patient\n'
+        'Age / Sex : 34 Y / F\n'
+        'Findings: Alive fetus seen with fetal heart rate 166 bpm.\n'
+        'Impression: Fetal anatomy appears normal.';
+
+    void expectClean(String context, {required List<String> keep}) {
+      for (final leak in [
+        patient,
+        facility,
+        'DOE',
+        'LAKEVIEW',
+        'Doe Jane Marie',
+        'Lakeview Hospital',
+      ]) {
+        expect(context, isNot(contains(leak)), reason: 'leaked "$leak"');
+      }
+      for (final wanted in keep) {
+        expect(context, contains(wanted), reason: 'lost "$wanted"');
+      }
+    }
+
+    test('stored summary carrying letterhead and patient block', () {
+      final doc = CuraDocument(
+        id: 'trimester',
+        title: 'First Trimester Screening',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        resultsNote:
+            'Findings: $facility\n'
+            '$patient\n'
+            'Alive fetus seen with fetal heart rate 166 bpm.\n'
+            'Impression: Fetal anatomy appears normal.',
+        extractedText: ocr,
+      );
+
+      expectClean(
+        gate.buildContext([doc]).text,
+        keep: ['fetal heart rate', 'Fetal anatomy appears normal'],
+      );
+    });
+
+    test('identity merged onto an Impression line by OCR', () {
+      final doc = CuraDocument(
+        id: 'merged',
+        title: 'First Trimester Screening',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        resultsNote:
+            'Impression: $facility Fetal anatomy appears normal. $patient',
+        extractedText: ocr,
+      );
+
+      expectClean(
+        gate.buildContext([doc]).text,
+        keep: ['Fetal anatomy appears normal'],
+      );
+    });
+
+    test('same identity in Title Case', () {
+      final doc = CuraDocument(
+        id: 'titlecase',
+        title: 'First Trimester Screening',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        resultsNote:
+            'Findings: Lakeview Hospital & Heart Institute\n'
+            'Doe Jane Marie\n'
+            'Alive fetus seen with fetal heart rate 166 bpm.',
+        extractedText: ocr,
+      );
+
+      expectClean(gate.buildContext([doc]).text, keep: ['fetal heart rate']);
+    });
+
+    test('ALL-CAPS stored title is replaced, not sent', () {
+      final doc = CuraDocument(
+        id: 'captitle',
+        title: patient,
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        extractedText: ocr,
+      );
+
+      final safe = gate.buildContext([doc]);
+      expectClean(safe.text, keep: const []);
+      expect(safe.stats.titlesReplaced, 1);
+    });
+
+    test('results rows carrying identity are dropped', () {
+      final doc = CuraDocument(
+        id: 'rows',
+        title: 'First Trimester Screening',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        results: const [
+          DocumentResult('Patient', patient),
+          DocumentResult('FHR', '166 bpm'),
+        ],
+      );
+
+      expectClean(gate.buildContext([doc]).text, keep: ['166 bpm']);
+    });
+
+    test('inventory hint never carries identity', () {
+      final doc = CuraDocument(
+        id: 'inv',
+        title: 'First Trimester Screening',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        resultsNote: 'Findings: $facility $patient Alive fetus seen.',
+        extractedText: ocr,
+      );
+
+      expectClean(gate.buildInventory([doc]).text, keep: const []);
+    });
+  });
+
+  // A genetic screening report keeps its maternal block as a results table, so
+  // the label and its value reach the gate already split apart. Every identity
+  // pattern is anchored on a `Label:` separator that the table parser has
+  // already consumed, which left demographic rows invisible to the barrier.
+  group('demographic results rows', () {
+    const gate = CloudPrivacyGate();
+
+    CuraDocument geneticScan() => CuraDocument(
+      id: 'genetic',
+      title: 'Ultrasound PREGNANCY 1TRIM (GENETIC SCAN)',
+      type: DocumentType.imaging,
+      date: DateTime(2026, 7, 3),
+      extractedText:
+          'LAKEVIEW HOSPITAL & HEART INSTITUTE\n'
+          'Patient Name : DOE JANE MARIE\n'
+          'Findings: Nuchal translucency 3.30 mm.',
+      results: const [
+        DocumentResult('Patient', 'Doe Jane Marie'),
+        DocumentResult('Name', 'DOE JANE MARIE'),
+        DocumentResult('Date of birth', '01/01/1990'),
+        DocumentResult('DOB', '01-Jan-1990'),
+        DocumentResult('Address', 'Sector 27, Fairview'),
+        DocumentResult('UHID', 'LH2026071012'),
+        DocumentResult('Age', '34 years'),
+        DocumentResult('Parity', '0'),
+        DocumentResult('Smoking', 'No'),
+        DocumentResult('Nuchal translucency', '3.30', unit: 'mm'),
+        DocumentResult('Free beta-hCG', '0.470', unit: 'MoM'),
+        DocumentResult('PAPP-A', '0.510', unit: 'MoM'),
+      ],
+    );
+
+    test('identity rows are dropped, clinical rows survive', () {
+      final context = gate.buildContext([geneticScan()]).text;
+
+      for (final leak in [
+        'Doe',
+        'DOE',
+        'Jane',
+        'Marie',
+        '01/01/1990',
+        '01-Jan-1990',
+        '1990',
+        'Fairview',
+        'LH2026071012',
+        'Lakeview',
+        'LAKEVIEW',
+      ]) {
+        expect(context, isNot(contains(leak)), reason: 'leaked "$leak"');
+      }
+
+      // Clinical measurements the report is actually about.
+      for (final wanted in ['3.30', '0.470', '0.510']) {
+        expect(context, contains(wanted), reason: 'lost "$wanted"');
+      }
+      // Age and sex drive the risk calculation and are kept by policy.
+      expect(context, contains('34 years'));
+    });
+
+    test('inventory hint never carries a demographic row', () {
+      final inventory = gate.buildInventory([geneticScan()]).text;
+      for (final leak in ['Doe', 'DOE', '01/01/1990', 'LH2026071012']) {
+        expect(inventory, isNot(contains(leak)), reason: 'leaked "$leak"');
+      }
+    });
+  });
+
+  // Every string below was captured off the wire on a real device. Each one
+  // slipped through a rule that matched on spelling while OCR had misread the
+  // word (birth -> blrth, Jane -> Janc, Fairview -> FaLrview).
+  group('OCR-mangled letterhead never reaches the cloud', () {
+    const gate = CloudPrivacyGate();
+
+    const scannedPage =
+        'Findings:\n'
+        'Nuchal translucency (NT) 3.30 mm\n'
+        'Crown-rump length (CRL) 67.7 mm\n'
+        'Springvale\n'
+        'sprIngVales Admn Date: 03 Jul 2026\n'
+        'General Speciality\n'
+        'Lakeview Hospital & Heart Institute\n'
+        'Free B-hcG equivalent to 0.470 MoM\n'
+        'Page 1 of3 printed on 10 July 2026. Janc (31892) examined on 10 July 2026.\n'
+        'Janc Examination date: 10 July 2026\n'
+        'Date of blrth: 01 January 1990\n'
+        'ki H-33, : 0999-111 11 11, 222 22 22 spaclally FaLrview 999301\n';
+
+    test('a date alone no longer qualifies a line', () {
+      final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
+      expect(kept, isNot(contains('blrth')));
+      expect(kept, isNot(contains('1990')));
+      expect(kept, isNot(contains('Examination date')));
+    });
+
+    test('title-case fragments do not ride an open section', () {
+      final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
+      expect(kept, isNot(contains('Springvale')));
+      expect(kept, isNot(contains('sprIngVales')));
+      // "general" is clinical vocabulary, "Speciality" is not, so one hit on a
+      // title-case line must not be enough to keep it.
+      expect(kept, isNot(contains('General Speciality')));
+      expect(kept, isNot(contains('Lakeview Hospital & Heart Institute')));
+    });
+
+    test('title-case clinical labels are not collateral damage', () {
+      final kept = keepMedicalLines(
+        'Findings:\n'
+        'Placenta Posterior\n'
+        'Ductus Venosus P! 1.30\n'
+        'Maternal Serum Biochemistry\n'
+        'General Speciality\n',
+        title: 'FIRST TRIMESTER',
+      );
+      expect(kept, contains('Placenta Posterior'));
+      expect(kept, contains('Ductus Venosus'));
+      expect(kept, contains('Maternal Serum Biochemistry'));
+      expect(kept, isNot(contains('General Speciality')));
+    });
+
+    test('page and print footers are dropped whole', () {
+      final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
+      expect(kept, isNot(contains('Janc')));
+      expect(kept, isNot(contains('31892')));
+    });
+
+    test('measurements survive all of it', () {
+      final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
+      for (final wanted in ['3.30', '67.7', '0.470']) {
+        expect(kept, contains(wanted), reason: 'lost "$wanted"');
+      }
+    });
+
+    test('raw page text is not appended when a note already covers it', () {
+      final doc = CuraDocument(
+        id: 'screening',
+        title: 'FIRST TRIMESTER SCREENING',
+        type: DocumentType.imaging,
+        date: DateTime(2026, 7, 10),
+        extractedText: scannedPage,
+        resultsNote: 'Nuchal translucency (NT) 3.30 mm',
+      );
+      final context = gate.buildContext([doc]).text;
+      expect(context, contains('3.30'));
+      expect(context, isNot(contains('Text:')));
+      for (final leak in ['Janc', 'blrth', '1990', 'FaLrview', '0999']) {
+        expect(context, isNot(contains(leak)), reason: 'leaked "$leak"');
+      }
     });
   });
 }

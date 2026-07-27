@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/util/range_status.dart';
+import '../ai/remote/pii_redactor.dart' show deleteNameRuns;
 import '../ai/retrieval.dart' show kMonthNames;
 import '../library/document.dart';
 import '../security/app_lock.dart' show withoutAppLock;
@@ -1018,10 +1019,19 @@ class ScanService {
         }
         continue;
       }
+      // A letterhead or bare-name line inside a clinical section is identity, not
+      // a finding. Unlabelled, it carries no `Label:` for the rules above to
+      // catch, so it is rejected on shape instead.
+      if (current != null && _looksLikeIdentityLine(line)) continue;
       if (current != null) captured.add(line);
     }
     if (captured.isEmpty) return null;
-    var summary = captured.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    // Joined per line, not into one blob: the cloud redactor works line by line
+    // and cannot scrub selectively inside a single 2500-character string.
+    var summary = captured
+        .map((l) => l.replaceAll(RegExp(r'[ \t]+'), ' ').trim())
+        .join('\n')
+        .trim();
     // Cap to a rich clinical summary length (Ask needs more than a one-liner),
     // trimming back to a sentence boundary.
     const cap = 2500;
@@ -1193,6 +1203,32 @@ final _summaryIdentityLine = RegExp(
   // Contact strings and long id/postal numbers anywhere on the line. No
   // clinical measurement runs to six digits.
   r'|[\w.-]+@[\w-]+\.\w{2,}|\bwww\.\w|\b\d{6,}\b',
+  caseSensitive: false,
+);
+
+/// An unlabelled line that is really identity: a facility letterhead, or a bare
+/// person name. Both are common between findings runs in a multi-page PDF and
+/// carry no `Label:` for [_summaryIdentityLine] to match.
+///
+/// Shape only, and only applied inside a clinical section, so a real finding is
+/// never mistaken for one: it must have no clinical measurement and either name
+/// an organisation kind or be a run of non-clinical capitalised words.
+bool _looksLikeIdentityLine(String line) {
+  final t = line.trim();
+  if (t.isEmpty || t.length > 90) return false;
+  // Anything carrying a measurement or a verdict is clinical content.
+  if (RegExp(r'\d').hasMatch(t) && !_facilityWord.hasMatch(t)) return false;
+  if (_facilityWord.hasMatch(t)) return true;
+  // A bare name run and nothing else on the line.
+  final stripped = deleteNameRuns(t);
+  return stripped.runs > 0 &&
+      stripped.text.replaceAll(RegExp(r'[^A-Za-z]'), '').length < 3;
+}
+
+/// Organisation kinds that make an unlabelled line a letterhead.
+final _facilityWord = RegExp(
+  r'\b(?:hospital|clinic|institute|laborator(?:y|ies)|diagnostics?|'
+  r'polyclinic|nursing\s+home|medical\s+(?:centre|center|college))\b',
   caseSensitive: false,
 );
 

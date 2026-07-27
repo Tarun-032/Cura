@@ -12,6 +12,7 @@ import 'ai_models.dart';
 import 'chat_format.dart';
 import 'query_router.dart';
 import 'remote/cloud_privacy_gate.dart';
+import 'remote/remote_ai_config.dart';
 import 'remote/remote_ai_store.dart';
 import 'remote/remote_chat_backend.dart';
 import 'retrieval.dart';
@@ -73,10 +74,16 @@ class _ScanRefinementCancellation {
 /// model only fills declared gaps, and every repaired number is tied to an OCR
 /// cell. The model loads once and stays warm; each request gets a fresh chat.
 class AiService {
-  AiService(this._manager, this._remote);
+  AiService(
+    this._manager,
+    this._remote, {
+    RemoteChatBackend Function(RemoteAiConfig config)? remoteBackendFactory,
+  }) : _remoteBackendFactory =
+           remoteBackendFactory ?? ((config) => RemoteChatBackend(config));
 
   final AiModelManager _manager;
   final RemoteAiStore _remote;
+  final RemoteChatBackend Function(RemoteAiConfig config) _remoteBackendFactory;
 
   LlamaController? _ctrl;
   AiModel? _spec;
@@ -142,9 +149,9 @@ class AiService {
       'documents. Politely decline anything unrelated (coding, trivia, opinions) '
       'in one line and steer back to their health.\n\n'
       'RECORDS: When records are supplied, rely on them and copy every title, '
-      'value, date and result exactly as written — never rephrase, abbreviate, '
-      'shorten, or invent a title (a receipt titled "Fenwick Medical Stores invoice" '
-      'is written exactly that way, never "Receipt" or "Medical document"). The '
+      'value, date and result exactly as written — never rephrase or invent facts. '
+      'Privacy-safe generic record titles may replace identifying facility, vendor, '
+      'or person names; use the supplied safe title exactly. The '
       '"Complete record inventory" section is the exhaustive list of every record '
       'on file; use it for counting, listing, comparing, and latest/oldest '
       'questions. The "Relevant report details" section holds the fuller medical '
@@ -176,7 +183,7 @@ class AiService {
       'then the list.\n'
       '- Use "- " bullet lines for any list. Start each bullet with the record\'s '
       'title in **bold**, then details separated by " — ", e.g. '
-      '"- **Fenwick Medical Stores invoice** — Jan 21, 2026 — ₹1,956.00".\n'
+      '"- **Receipt** — Jan 21, 2026 — ₹1,956.00".\n'
       '- Use **bold** to highlight the key figure in a short answer (a value, a '
       'date, a count). You may open a longer answer with a "### " sub-heading.\n'
       '- NEVER use a Markdown table, "|" pipe characters, HTML, or images — they '
@@ -304,12 +311,9 @@ class AiService {
     if (shouldUseQueryRouter(cloudActive: useRemote)) {
       routed = routeQuestion(q, docs);
       if (routed != null) {
-        final preview = routed.text.length > 40
-            ? routed.text.substring(0, 40)
-            : routed.text;
         debugPrint(
-          '[Cura.ai] routed src=${routed.source?.title ?? 'none'} '
-          '"${preview.replaceAll('\n', ' ')}"',
+          '[Cura.ai] routed kind=${routed.kind.name} '
+          'hasSource=${routed.source != null}',
         );
       }
     }
@@ -353,11 +357,11 @@ class AiService {
     if (routed == null) {
       debugPrint(
         '[Cura.ai] grounding kind=${g.kind.name} '
-        'source=${g.source?.title ?? 'none'} '
+        'hasSource=${g.source != null} '
         'missing=${g.missingLabel ?? '-'} focus=$focusDocIds '
         'orderedFocus=$orderedFocusDocIds '
         'shown=$shownSourceIds '
-        'cands=${g.contextDocs.map((d) => d.title).toList()}',
+        'candidates=${g.contextDocs.length}',
       );
     }
 
@@ -372,6 +376,9 @@ class AiService {
     // Cloud gets minimized context: structured fields plus an allowlisted medical
     // excerpt, then [redactForCloud]. On-device sends a fuller OCR excerpt.
     const privacyGate = CloudPrivacyGate();
+    final cloudIdentityTerms = useRemote
+        ? privacyGate.identityTermsForDocuments(docs)
+        : const <String>{};
     final detailedContext = contextDocs.isEmpty
         ? ''
         : (useRemote
@@ -382,7 +389,11 @@ class AiService {
     final inventory = useRemote && g.kind != GroundingKind.none
         ? privacyGate.buildInventory(docs).text
         : '';
-    final safeQuestion = useRemote ? privacyGate.userMessage(q).content : q;
+    final safeQuestion = useRemote
+        ? privacyGate
+              .userMessage(q, knownIdentityTerms: cloudIdentityTerms)
+              .content
+        : q;
     final remoteQuestion = safeQuestion.isNotEmpty
         ? safeQuestion
         : 'Answer the health-record question using the supplied records. If the '
@@ -435,8 +446,15 @@ class AiService {
         // Re-applied in _answerRemote; both policies are idempotent.
         final safeText =
             (turn.role == 'assistant'
-                    ? privacyGate.assistantMessage(turn.text)
-                    : privacyGate.userMessage(turn.text, role: turn.role))
+                    ? privacyGate.assistantMessage(
+                        turn.text,
+                        knownIdentityTerms: cloudIdentityTerms,
+                      )
+                    : privacyGate.userMessage(
+                        turn.text,
+                        role: turn.role,
+                        knownIdentityTerms: cloudIdentityTerms,
+                      ))
                 .content;
         if (safeText.isNotEmpty) {
           safePriorTurns.add((role: turn.role, text: safeText));
@@ -472,6 +490,7 @@ class AiService {
         basePrompt,
         safePriorTurns,
         userContent,
+        knownIdentityTerms: cloudIdentityTerms,
         cardSources: cardSources,
         cardTotal: cardTotal,
         cardCandidates: cardCandidates,
@@ -766,6 +785,7 @@ class AiService {
     String systemPrompt,
     List<({String role, String text})> priorTurns,
     String userContent, {
+    Set<String> knownIdentityTerms = const {},
     List<CuraDocument> cardSources = const [],
     int cardTotal = 0,
     List<CuraDocument> cardCandidates = const [],
@@ -775,13 +795,23 @@ class AiService {
       CloudSafeMessage.developerLiteral(role: 'system', content: systemPrompt),
       for (final t in priorTurns)
         if (t.role == 'assistant')
-          privacyGate.assistantMessage(t.text)
+          privacyGate.assistantMessage(
+            t.text,
+            knownIdentityTerms: knownIdentityTerms,
+          )
         else
-          privacyGate.userMessage(t.text, role: t.role),
-      privacyGate.documentMessage(userContent),
+          privacyGate.userMessage(
+            t.text,
+            role: t.role,
+            knownIdentityTerms: knownIdentityTerms,
+          ),
+      privacyGate.documentMessage(
+        userContent,
+        knownIdentityTerms: knownIdentityTerms,
+      ),
     ];
     final cfg = await _remote.config();
-    final backend = RemoteChatBackend(cfg);
+    final backend = _remoteBackendFactory(cfg);
     final sw = Stopwatch()..start();
     final buf = StringBuffer();
     var tokens = 0;
@@ -795,10 +825,16 @@ class AiService {
         if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds;
         tokens++;
         buf.write(tok);
-        final p = _split(buf.toString());
+        final partial = _split(buf.toString());
         yield AskChunk(
-          p.answer,
-          thinking: p.thinking,
+          privacyGate.responseText(
+            partial.answer,
+            knownIdentityTerms: knownIdentityTerms,
+          ),
+          thinking: privacyGate.responseText(
+            partial.thinking,
+            knownIdentityTerms: knownIdentityTerms,
+          ),
           source: source,
           sources: cardSources,
           sourceTotal: cardTotal,
@@ -820,7 +856,17 @@ class AiService {
       '[Cura.ai] remote model=${cfg.modelId} promptChars=${userContent.length} '
       'ttftMs=$ttftMs totalMs=${sw.elapsedMilliseconds} tokens=$tokens',
     );
-    final p = _split(buf.toString());
+    final raw = _split(buf.toString());
+    final p = _ParsedAnswer(
+      privacyGate.responseText(
+        raw.thinking,
+        knownIdentityTerms: knownIdentityTerms,
+      ),
+      privacyGate.responseText(
+        raw.answer,
+        knownIdentityTerms: knownIdentityTerms,
+      ),
+    );
     // Infer the cited report when the model resolved among several attached ones.
     final inferredCards = cardCandidates.isEmpty
         ? const <CuraDocument>[]
