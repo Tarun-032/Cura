@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 208 208" width="208" height="208" role="img" aria-label="Cura logo">
+  <title>Cura</title>
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#BFFFED" stop-opacity="1"/>
+      <stop offset="64%" stop-color="#BFFFED" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#BFFFED" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Soft mint halo, full at the core and feathering out at the rim. -->
+  <circle cx="104" cy="104" r="104" fill="url(#halo)"/>
+  <!-- Floating white disc. -->
+  <circle cx="104" cy="104" r="66.56" fill="#FFFFFF"/>
+  <!-- The mark, authored in a 100x100 space like CuraMark. -->
+  <g transform="translate(56.16 56.16) scale(0.9568)">
+    <circle cx="50" cy="50" r="34" fill="none" stroke="#00674F" stroke-width="4"/>
+    <circle cx="44" cy="46" r="16" fill="#00674F"/>
+    <circle cx="61" cy="63" r="5" fill="#3EBB9E"/>
+  </g>
+</svg>

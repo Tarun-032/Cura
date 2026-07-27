@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/cura-logo.svg" width="150" alt="">
+
 # Cura
 
 **A Privacy-Focused Medical Records App**
