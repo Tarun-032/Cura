@@ -34,12 +34,31 @@ bool needsSummaryRewrite({
 /// to keep or null to discard. The model may rephrase, never renumber, and
 /// never pad: an output much longer than its source has added something.
 String? acceptSummaryRewrite(String source, String? output) {
-  final out = output?.trim() ?? '';
+  var out = output?.trim() ?? '';
   if (out.isEmpty) return null;
   if (looksLikeModelRefusal(out)) return null;
   if (out.length > source.length * 1.5 + 200) return null;
+  // Neither backend reports hitting the token cap, so the text is the only
+  // evidence. Anything past the last sentence ending was cut off mid-thought.
+  if (!_sentenceEnders.contains(out[out.length - 1])) {
+    final cut = _lastSentenceEnd(out);
+    if (cut < 0) return null;
+    out = out.substring(0, cut + 1);
+  }
+  // A condensed summary is meant to be far shorter than its source, so this is
+  // an absolute floor, not a ratio: only a near-empty result is refused.
+  if (out.length < 60) return null;
   if (!numbersGrounded(source, out)) return null;
   return out;
+}
+
+const _sentenceEnders = '.!?…';
+
+int _lastSentenceEnd(String text) {
+  for (var i = text.length - 1; i >= 0; i--) {
+    if (_sentenceEnders.contains(text[i])) return i;
+  }
+  return -1;
 }
 
 /// One call to the model, taken as a function so the queue can be tested

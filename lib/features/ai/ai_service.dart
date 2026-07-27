@@ -1045,16 +1045,19 @@ class AiService {
         ScanExtractionMode.tableRepair => _repairTablePrompt,
       };
 
-  // The one place the model writes prose about a document. It reorders and
-  // joins; it may not add, drop, or reinterpret anything.
+  // The one place the model writes prose about a document. It condenses and
+  // joins; it may not add or reinterpret. Only boilerplate may be dropped.
   static const _summaryRewritePrompt =
-      'Rewrite the clinical summary below as clear, plain English for the '
-      'person the report belongs to. Keep every finding, measurement, value, '
-      'date, and clinical term exactly as printed, including negatives such as '
-      '"no evidence of". Join the fragments into proper sentences and drop '
-      'section labels, but never add, infer, interpret, diagnose, reassure, or '
-      'leave anything out. No heading, preamble, closing, or bullet list. '
-      'Return only the rewritten summary.';
+      'Summarize the clinical report below as clear, plain English for the '
+      'person it belongs to. Keep every finding, measurement, value, date, and '
+      'clinical term exactly as printed, including negatives such as "no '
+      'evidence of". Leave out standard boilerplate: testing disclaimers, '
+      'report turnaround times, protocol and technique notes, and anything not '
+      'about this person\'s own result. Join the fragments into proper '
+      'sentences and drop section labels, but never add, infer, interpret, '
+      'diagnose, or reassure. Aim for about 5 to 8 sentences, and always '
+      'finish the sentence you are writing. No heading, preamble, closing, or '
+      'bullet list. Return only the summary.';
 
   /// Rewrites a scraped section dump as plain prose, on whichever engine is
   /// active. Raw model output: [SummaryRewriter] validates it before it is kept.
@@ -1197,7 +1200,7 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
-  static const _kRewriteMaxTokens = 512;
+  static const _kRewriteMaxTokens = 768;
 
   /// Starts one cancellable request and returns its field targets immediately.
   /// Null means this document/engine combination is entirely deterministic.

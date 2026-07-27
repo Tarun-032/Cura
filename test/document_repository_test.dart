@@ -76,6 +76,55 @@ void main() {
     expect(stored.summaryState, isNull);
   });
 
+  test('v5 database migration re-queues every existing rewrite', () async {
+    final executor = NativeDatabase.memory(
+      setup: (database) {
+        database.execute('''
+          CREATE TABLE documents (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            date INTEGER NOT NULL,
+            extracted_text TEXT NOT NULL DEFAULT '',
+            results TEXT NOT NULL DEFAULT '[]',
+            results_note TEXT,
+            summary_rewrite TEXT,
+            summary_state TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
+            file_path TEXT,
+            file_paths TEXT,
+            source_pdf_path TEXT
+          )
+        ''');
+        database.execute('''
+          INSERT INTO documents (id, title, type, date, results_note, summary_rewrite)
+          VALUES ('scan-cut', 'Chest CT', 'imaging', 0,
+                  'Impression: pneumonia.', 'The report would arrive in 2')
+        ''');
+        database.execute('''
+          INSERT INTO documents (id, title, type, date, results_note)
+          VALUES ('scan-plain', 'Blood work', 'lab', 0, '4 results')
+        ''');
+        database.execute('PRAGMA user_version = 5');
+      },
+    );
+    final database = AppDatabase.forTesting(executor);
+    addTearDown(database.close);
+
+    final stored = {
+      for (final d in await DocumentRepository(database).watchDocuments().first)
+        d.id: d,
+    };
+
+    // The truncated rewrite is dropped and queued again; nothing else moves.
+    expect(stored['scan-cut']!.summaryRewrite, isNull);
+    expect(stored['scan-cut']!.summaryState, 'pending');
+    expect(stored['scan-cut']!.resultsNote, 'Impression: pneumonia.');
+    expect(stored['scan-cut']!.title, 'Chest CT');
+    // A document that never had a rewrite is not queued by the migration.
+    expect(stored['scan-plain']!.summaryState, isNull);
+  });
+
   test('persists the original PDF path alongside rendered pages', () async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(database.close);

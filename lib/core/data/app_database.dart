@@ -148,7 +148,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -174,6 +174,15 @@ class AppDatabase extends _$AppDatabase {
       if (from < 5) {
         await m.addColumn(documents, documents.summaryRewrite);
         await m.addColumn(documents, documents.summaryState);
+      }
+      // v5 -> v6: every rewrite written before this ran under a 512-token cap
+      // that cut long summaries mid-sentence. Drop them and let the queue redo
+      // them; the verbatim summary in resultsNote was never touched.
+      if (from < 6) {
+        await customStatement(
+          "UPDATE documents SET summary_rewrite = NULL, summary_state = 'pending' "
+          'WHERE summary_rewrite IS NOT NULL',
+        );
       }
     },
   );

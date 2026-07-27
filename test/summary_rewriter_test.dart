@@ -12,6 +12,11 @@ const _scraped =
     'effusion. Mediastinum unremarkable.\n'
     'Impression: Findings consistent with pneumonia.';
 
+/// A believable rewrite: long enough to clear the near-empty floor.
+const _prose =
+    'A 3.2 cm area of consolidation sits in your right lower lobe, with no '
+    'fluid around the lung.';
+
 CuraDocument _doc({
   DocumentType type = DocumentType.imaging,
   String? note = _scraped,
@@ -95,7 +100,7 @@ void main() {
     });
 
     test('trims before it judges', () {
-      expect(acceptSummaryRewrite(_scraped, '  Short but fine.  '), 'Short but fine.');
+      expect(acceptSummaryRewrite(_scraped, '  $_prose  '), _prose);
     });
 
     test('rejects a number that was never on the page', () {
@@ -124,6 +129,48 @@ void main() {
       final padded = List.filled(60, 'The scan was reviewed carefully.').join(' ');
       expect(acceptSummaryRewrite(_scraped, padded), isNull);
     });
+
+    test('trims a cut-off tail back to the last full sentence', () {
+      // What a token cap leaves behind: the last thought stops mid-word.
+      expect(
+        acceptSummaryRewrite(
+          _scraped,
+          'You had a cough for six weeks. The scan shows consolidation in the '
+          'right lower lobe. The full report would be available in 2',
+        ),
+        'You had a cough for six weeks. The scan shows consolidation in the '
+        'right lower lobe.',
+      );
+    });
+
+    test('leaves complete output untouched', () {
+      for (final ending in ['.', '!', '?', '…']) {
+        const body =
+            'The scan shows consolidation in the right lower lobe with no '
+            'pleural effusion';
+        expect(acceptSummaryRewrite(_scraped, '$body$ending  '), '$body$ending');
+      }
+    });
+
+    test('rejects output with no sentence ending at all', () {
+      expect(
+        acceptSummaryRewrite(
+          _scraped,
+          'The scan shows consolidation in the right lower lobe and no pleural',
+        ),
+        isNull,
+      );
+    });
+
+    test('rejects a trim that leaves too little to be useful', () {
+      expect(
+        acceptSummaryRewrite(
+          _scraped,
+          'Pneumonia. The remaining findings were still being described when',
+        ),
+        isNull,
+      );
+    });
   });
 
   group('the queue', () {
@@ -146,13 +193,12 @@ void main() {
 
     test('an accepted rewrite is stored and the row settles', () async {
       await repository.add(_doc(state: kSummaryPending));
-      const prose = 'A 3.2 cm consolidation sits in the right lower lobe.';
 
-      await SummaryRewriter(repository, replying(const SummaryRewrite(prose)))
+      await SummaryRewriter(repository, replying(const SummaryRewrite(_prose)))
           .sweep();
 
       final stored = (await repository.watchDocuments().first).single;
-      expect(stored.summaryRewrite, prose);
+      expect(stored.summaryRewrite, _prose);
       expect(stored.summaryState, isNull);
       // The verbatim text Ask quotes is untouched.
       expect(stored.resultsNote, _scraped);
@@ -200,14 +246,14 @@ void main() {
 
       await SummaryRewriter(
         repository,
-        replying(const SummaryRewrite('Clear prose.'), seen: seen),
+        replying(const SummaryRewrite(_prose), seen: seen),
       ).sweep();
 
       expect(seen, hasLength(2));
       final stored = await repository.watchDocuments().first;
       expect(
         {for (final d in stored) d.id: d.summaryRewrite},
-        {'scan-1': 'Clear prose.', 'scan-2': 'Clear prose.', 'scan-3': null},
+        {'scan-1': _prose, 'scan-2': _prose, 'scan-3': null},
       );
     });
 
@@ -222,11 +268,11 @@ void main() {
       ).sweep();
       await SummaryRewriter(
         repository,
-        replying(const SummaryRewrite('Clear prose.')),
+        replying(const SummaryRewrite(_prose)),
       ).sweep();
 
       final stored = await repository.watchDocuments().first;
-      expect(stored.every((d) => d.summaryRewrite == 'Clear prose.'), isTrue);
+      expect(stored.every((d) => d.summaryRewrite == _prose), isTrue);
     });
 
     test('nothing pending is a no-op', () async {
@@ -272,10 +318,10 @@ void main() {
     test('setSummaryRewrite touches only its two columns', () async {
       await repository.add(_doc(state: kSummaryPending));
 
-      await repository.setSummaryRewrite('scan-1', text: 'Clear prose.');
+      await repository.setSummaryRewrite('scan-1', text: _prose);
 
       final stored = (await repository.watchDocuments().first).single;
-      expect(stored.summaryRewrite, 'Clear prose.');
+      expect(stored.summaryRewrite, _prose);
       expect(stored.summaryState, isNull);
       expect(stored.title, 'Chest CT');
       expect(stored.resultsNote, _scraped);
