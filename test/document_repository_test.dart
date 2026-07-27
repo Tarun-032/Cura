@@ -38,6 +38,44 @@ void main() {
     );
   });
 
+  test('v4 database migration adds the summary rewrite columns', () async {
+    final executor = NativeDatabase.memory(
+      setup: (database) {
+        database.execute('''
+          CREATE TABLE documents (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            date INTEGER NOT NULL,
+            extracted_text TEXT NOT NULL DEFAULT '',
+            results TEXT NOT NULL DEFAULT '[]',
+            results_note TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
+            file_path TEXT,
+            file_paths TEXT,
+            source_pdf_path TEXT
+          )
+        ''');
+        database.execute('''
+          INSERT INTO documents (id, title, type, date, results_note)
+          VALUES ('scan-old', 'Chest CT', 'imaging', 0, 'Impression: normal.')
+        ''');
+        database.execute('PRAGMA user_version = 4');
+      },
+    );
+    final database = AppDatabase.forTesting(executor);
+    addTearDown(database.close);
+
+    final stored = (await DocumentRepository(
+      database,
+    ).watchDocuments().first).single;
+
+    // An existing record keeps its summary and is never queued.
+    expect(stored.resultsNote, 'Impression: normal.');
+    expect(stored.summaryRewrite, isNull);
+    expect(stored.summaryState, isNull);
+  });
+
   test('persists the original PDF path alongside rendered pages', () async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(database.close);

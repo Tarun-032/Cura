@@ -35,6 +35,39 @@ class DocumentRepository {
   /// Wipe every document from the device.
   Future<void> deleteAll() => _db.delete(_db.documents).go();
 
+  /// The oldest document still waiting for its summary rewrite, or null.
+  /// [excluding] holds ids already tried in this pass, so a document demoted to
+  /// 'retry' waits for the next one instead of failing twice in a row.
+  Future<CuraDocument?> nextPendingSummary({
+    Set<String> excluding = const {},
+  }) async {
+    final query = _db.select(_db.documents)
+      ..where(
+        (d) =>
+            d.summaryState.isIn(const ['pending', 'retry']) &
+            d.id.isNotIn(excluding),
+      )
+      ..orderBy([(d) => OrderingTerm.asc(d.id)])
+      ..limit(1);
+    final row = await query.getSingleOrNull();
+    return row == null ? null : _toModel(row);
+  }
+
+  /// Records the outcome of one rewrite attempt. Writes those two columns only,
+  /// so an edit made while the rewrite was running is never clobbered.
+  Future<void> setSummaryRewrite(
+    String id, {
+    String? text,
+    String? state,
+  }) async {
+    await (_db.update(_db.documents)..where((d) => d.id.equals(id))).write(
+      DocumentsCompanion(
+        summaryRewrite: Value(text),
+        summaryState: Value(state),
+      ),
+    );
+  }
+
   CuraDocument _toModel(Document row) => CuraDocument(
     id: row.id,
     title: row.title,
@@ -43,6 +76,8 @@ class DocumentRepository {
     extractedText: row.extractedText,
     results: row.results,
     resultsNote: row.resultsNote,
+    summaryRewrite: row.summaryRewrite,
+    summaryState: row.summaryState,
     tags: row.tags,
     pages: _pagesFromRow(row),
     sourcePdfPath: row.sourcePdfPath,
@@ -56,6 +91,8 @@ class DocumentRepository {
     extractedText: Value(doc.extractedText),
     results: Value(doc.results),
     resultsNote: Value(doc.resultsNote),
+    summaryRewrite: Value(doc.summaryRewrite),
+    summaryState: Value(doc.summaryState),
     tags: Value(doc.tags),
     // Mirror the first page into the legacy column so any single-image
     // reader (and older code paths) still resolves an image.

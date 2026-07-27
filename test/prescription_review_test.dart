@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:cura/core/data/providers.dart';
 import 'package:cura/features/library/document.dart';
 import 'package:cura/features/library/document_detail_screen.dart';
 import 'package:cura/features/scan/review_document_screen.dart';
+import 'package:cura/features/scan/summary_rewriter.dart';
 
 void main() {
   CuraDocument prescription({
@@ -55,19 +59,26 @@ void main() {
   ) async {
     useTallTestView(tester);
     await tester.pumpWidget(
-      MaterialApp(
-        home: DocumentDetailScreen(
-          document: prescription(
-            summary: 'Follow-up for seborrheic dermatitis.',
-            results: const [
-              DocumentResult(
-                'BALBACK PRO SERUM',
-                '1 ml locally on scalp, twice daily',
-              ),
-            ],
+      ProviderScope(
+        overrides: [
+          // Detail re-reads the stored row so a background rewrite lands on an
+          // open page. Nothing stored here, so it keeps what it was handed.
+          documentsProvider.overrideWith((ref) => const Stream.empty()),
+        ],
+        child: MaterialApp(
+          home: DocumentDetailScreen(
+            document: prescription(
+              summary: 'Follow-up for seborrheic dermatitis.',
+              results: const [
+                DocumentResult(
+                  'BALBACK PRO SERUM',
+                  '1 ml locally on scalp, twice daily',
+                ),
+              ],
+            ),
+            onUpdate: (_) {},
+            onDelete: (_) {},
           ),
-          onUpdate: (_) {},
-          onDelete: (_) {},
         ),
       ),
     );
@@ -79,5 +90,47 @@ void main() {
     expect(find.text('BALBACK PRO SERUM'), findsOneWidget);
     expect(find.text('1 ml locally on scalp, twice daily'), findsOneWidget);
     expect(find.text('Results'), findsNothing);
+  });
+
+  testWidgets('detail swaps in the rewrite once it lands', (tester) async {
+    useTallTestView(tester);
+    final stored = StreamController<List<CuraDocument>>();
+    addTearDown(stored.close);
+    final pending = prescription(
+      summary: 'Follow-up for seborrheic dermatitis.',
+    ).copyWith(summaryState: kSummaryPending);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [documentsProvider.overrideWith((ref) => stored.stream)],
+        child: MaterialApp(
+          home: DocumentDetailScreen(
+            document: pending,
+            onUpdate: (_) {},
+            onDelete: (_) {},
+          ),
+        ),
+      ),
+    );
+    stored.add([pending]);
+    await tester.pump();
+
+    // The deterministic summary stays readable while the model works.
+    expect(find.text('Rewriting…'), findsOneWidget);
+    expect(find.text('Follow-up for seborrheic dermatitis.'), findsOneWidget);
+
+    stored.add([
+      pending.copyWith(
+        summaryRewrite: 'You are being followed up for seborrheic dermatitis.',
+        clearSummaryState: true,
+      ),
+    ]);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Rewriting…'), findsNothing);
+    expect(
+      find.text('You are being followed up for seborrheic dermatitis.'),
+      findsOneWidget,
+    );
   });
 }

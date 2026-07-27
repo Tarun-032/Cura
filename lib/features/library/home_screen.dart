@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +16,7 @@ import '../scan/document_shape.dart';
 import '../scan/review_document_screen.dart';
 import '../scan/scan_extraction.dart';
 import '../scan/scan_service.dart';
+import '../scan/summary_rewriter.dart';
 import '../settings/settings_view.dart';
 import '../timeline/timeline_view.dart';
 import 'document.dart';
@@ -40,6 +43,13 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   CuraTab _currentTab = CuraTab.home;
   bool _openingAsk = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Picks up anything a failure or a force-close left pending.
+    unawaited(ref.read(summaryRewriterProvider).sweep());
+  }
 
   Future<void> _onAdd() async {
     final action = await showModalBottomSheet<_AddDocumentAction>(
@@ -249,7 +259,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
     if (doc != null) {
-      await ref.read(documentRepositoryProvider).add(doc);
+      // The scraped narrative summary reads like a dump. Queue it for a
+      // readable rewrite, unless the user already wrote their own in Review.
+      // With no engine set up there is nothing to wait for, so nothing is
+      // queued and the deterministic summary simply stands.
+      final queued =
+          needsSummaryRewrite(
+            type: doc.type,
+            note: doc.resultsNote,
+            deterministicNote: draft.resultsNote,
+          ) &&
+          (await ref.read(remoteAiStoreProvider).remoteActive() ||
+              await ref.read(aiModelManagerProvider).installedModel() != null);
+      await ref
+          .read(documentRepositoryProvider)
+          .add(queued ? doc.copyWith(summaryState: kSummaryPending) : doc);
+      if (queued) unawaited(ref.read(summaryRewriterProvider).sweep());
     } else {
       await _discardSource(current);
     }

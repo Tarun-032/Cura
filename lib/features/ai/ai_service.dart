@@ -49,6 +49,15 @@ class _ParsedAnswer {
 
 enum ScanExtractionMode { metadata, receipt, tableRepair }
 
+/// Raw output of one summary rewrite. [preempted] separates "the user asked a
+/// question and took the model back" from a real failure, so the queue can
+/// retry it later without burning its one retry.
+class SummaryRewrite {
+  const SummaryRewrite(this.text, {this.preempted = false});
+  final String? text;
+  final bool preempted;
+}
+
 /// Stops a streaming backend: `stop()` locally, `close()` on the cloud client.
 /// Attaching after a cancel fires at once, covering a stop during model load.
 class GenerationCancellation {
@@ -152,6 +161,23 @@ class AiService {
   /// Drops the warm cache. Ask calls this after editing a question, since the
   /// cache still holds the turn that was removed.
   Future<void> resetConversationCache() => _clearKv();
+
+  // The background summary rewrite, if one is running. There is one native
+  // context, so a user waiting on an answer takes it back.
+  GenerationCancellation? _background;
+  Future<void>? _backgroundDone;
+
+  /// Takes the model back from a background rewrite, and waits for it to
+  /// actually let go. Stopping is asynchronous: without the wait its `stop()`
+  /// and its cache clear can land after the next request has started and kill
+  /// it instead. [untilCancelled] bounds how long that wait can be.
+  Future<void> _preemptBackground() async {
+    _background?.cancel();
+    _background = null;
+    final done = _backgroundDone;
+    _backgroundDone = null;
+    if (done != null) await done;
+  }
 
   /// Answer ceiling for the cloud engine. No small context window to clamp
   /// against, and the provider still stops at the model's end-of-turn token.
@@ -336,6 +362,7 @@ class AiService {
     List<String> orderedFocusDocIds = const [],
     GenerationCancellation? cancellation,
   }) async* {
+    await _preemptBackground();
     final q = question.trim();
     if (q.isEmpty) {
       yield const AskChunk('', done: true);
@@ -1018,6 +1045,160 @@ class AiService {
         ScanExtractionMode.tableRepair => _repairTablePrompt,
       };
 
+  // The one place the model writes prose about a document. It reorders and
+  // joins; it may not add, drop, or reinterpret anything.
+  static const _summaryRewritePrompt =
+      'Rewrite the clinical summary below as clear, plain English for the '
+      'person the report belongs to. Keep every finding, measurement, value, '
+      'date, and clinical term exactly as printed, including negatives such as '
+      '"no evidence of". Join the fragments into proper sentences and drop '
+      'section labels, but never add, infer, interpret, diagnose, reassure, or '
+      'leave anything out. No heading, preamble, closing, or bullet list. '
+      'Return only the rewritten summary.';
+
+  /// Rewrites a scraped section dump as plain prose, on whichever engine is
+  /// active. Raw model output: [SummaryRewriter] validates it before it is kept.
+  Future<SummaryRewrite> rewriteSummary(
+    String summary, {
+    required DocumentType type,
+    String? title,
+  }) async {
+    final source = summary.trim();
+    if (source.isEmpty) return const SummaryRewrite(null);
+    final useRemote = await _remote.remoteActive();
+    if (!useRemote && await _manager.installedModel() == null) {
+      return const SummaryRewrite(null);
+    }
+    await _preemptBackground();
+    final cancellation = GenerationCancellation();
+    final done = Completer<void>();
+    _background = cancellation;
+    _backgroundDone = done.future;
+    try {
+      final sw = Stopwatch()..start();
+      final out = useRemote
+          ? await _rewriteRemote(
+              source,
+              type: type,
+              title: title,
+              cancellation: cancellation,
+            )
+          : await _rewriteLocal(source, cancellation: cancellation);
+      debugPrint(
+        '[Cura.ai] rewrite engine=${useRemote ? 'remote' : 'local'} '
+        'ms=${sw.elapsedMilliseconds} sourceChars=${source.length} '
+        'outputChars=${out.length} preempted=${cancellation.cancelled}',
+      );
+      if (cancellation.cancelled) {
+        return const SummaryRewrite(null, preempted: true);
+      }
+      return SummaryRewrite(out);
+    } catch (_) {
+      return SummaryRewrite(null, preempted: cancellation.cancelled);
+    } finally {
+      // Released only here, once the backend has stopped and the cache is
+      // settled, so whoever preempted this is safe to start.
+      if (identical(_background, cancellation)) _background = null;
+      if (identical(_backgroundDone, done.future)) _backgroundDone = null;
+      done.complete();
+    }
+  }
+
+  Future<String> _rewriteLocal(
+    String source, {
+    required GenerationCancellation cancellation,
+  }) async {
+    await _ensureLoaded();
+    if (cancellation.cancelled) return '';
+    // Clear via _clearKv so the Ask reuse tracker knows this wiped the cache.
+    await _clearKv();
+    cancellation.attach(_stopLocal);
+    final system = _spec!.canThink
+        ? '$_summaryRewritePrompt /no_think'
+        : _summaryRewritePrompt;
+    final promptChars = system.length + source.length + 24;
+    final headroom = _spec!.contextSize - (promptChars / 3.5).ceil() - 48;
+    final ceiling = _spec!.maxOutputTokens < _kRewriteMaxTokens
+        ? _spec!.maxOutputTokens
+        : _kRewriteMaxTokens;
+    final maxTokens = headroom < ceiling
+        ? (headroom < 96 ? 96 : headroom)
+        : ceiling;
+
+    final buf = StringBuffer();
+    try {
+      await for (final tok in untilCancelled(
+        _ctrl!.generateChat(
+          messages: [
+            ChatMessage(role: 'system', content: system),
+            ChatMessage(role: 'user', content: 'Summary:\n$source'),
+          ],
+          template: _spec!.template,
+          temperature: 0.2,
+          topK: 40,
+          topP: 0.95,
+          maxTokens: maxTokens,
+        ),
+        cancellation,
+      )) {
+        if (cancellation.cancelled) break;
+        buf.write(tok);
+      }
+    } finally {
+      cancellation.detach();
+      // Prose is long enough to leave a big open answer in the cache, and the
+      // next Ask turn has nothing to stitch it to.
+      await _clearKv();
+    }
+    return _split(buf.toString()).answer;
+  }
+
+  Future<String> _rewriteRemote(
+    String source, {
+    required DocumentType type,
+    required String? title,
+    required GenerationCancellation cancellation,
+  }) async {
+    // Same minimization the cloud scan refinement uses. An empty result means
+    // the allowlist kept nothing, which fails closed rather than sending more.
+    final safe = const CloudPrivacyGate()
+        .scanText(source, title: title, type: type)
+        .text;
+    if (safe.isEmpty) return '';
+    final backend = _remoteBackendFactory(await _remote.config());
+    cancellation.attach(backend.close);
+    if (cancellation.cancelled) return '';
+    final buf = StringBuffer();
+    try {
+      await for (final tok in untilCancelled(
+        backend.generate(
+          messages: [
+            CloudSafeMessage.developerLiteral(
+              role: 'system',
+              content: _summaryRewritePrompt,
+            ),
+            const CloudPrivacyGate().documentMessage(
+              'Summary:\n$safe',
+              role: 'user',
+            ),
+          ],
+          temperature: 0.2,
+          maxTokens: _kRewriteMaxTokens,
+        ),
+        cancellation,
+      )) {
+        if (cancellation.cancelled) break;
+        buf.write(tok);
+      }
+    } finally {
+      cancellation.detach();
+      backend.close();
+    }
+    return _split(buf.toString()).answer;
+  }
+
+  static const _kRewriteMaxTokens = 512;
+
   /// Starts one cancellable request and returns its field targets immediately.
   /// Null means this document/engine combination is entirely deterministic.
   ScanRefinementJob? startDocumentRefinement(
@@ -1090,6 +1271,9 @@ class AiService {
   }) async {
     final text = ocrText.trim();
     if (text.isEmpty) return null;
+    // A scan outranks a background rewrite, and must not start until that one
+    // has released the model.
+    await _preemptBackground();
     if (!useRemote && await _manager.installedModel() == null) return null;
     if (cancellation.cancelled) return null;
     try {

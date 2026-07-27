@@ -78,6 +78,28 @@ class $DocumentsTable extends Documents
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _summaryRewriteMeta = const VerificationMeta(
+    'summaryRewrite',
+  );
+  @override
+  late final GeneratedColumn<String> summaryRewrite = GeneratedColumn<String>(
+    'summary_rewrite',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _summaryStateMeta = const VerificationMeta(
+    'summaryState',
+  );
+  @override
+  late final GeneratedColumn<String> summaryState = GeneratedColumn<String>(
+    'summary_state',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   late final GeneratedColumnWithTypeConverter<List<String>, String> tags =
       GeneratedColumn<String>(
@@ -130,6 +152,8 @@ class $DocumentsTable extends Documents
     extractedText,
     results,
     resultsNote,
+    summaryRewrite,
+    summaryState,
     tags,
     filePath,
     filePaths,
@@ -183,6 +207,24 @@ class $DocumentsTable extends Documents
         resultsNote.isAcceptableOrUnknown(
           data['results_note']!,
           _resultsNoteMeta,
+        ),
+      );
+    }
+    if (data.containsKey('summary_rewrite')) {
+      context.handle(
+        _summaryRewriteMeta,
+        summaryRewrite.isAcceptableOrUnknown(
+          data['summary_rewrite']!,
+          _summaryRewriteMeta,
+        ),
+      );
+    }
+    if (data.containsKey('summary_state')) {
+      context.handle(
+        _summaryStateMeta,
+        summaryState.isAcceptableOrUnknown(
+          data['summary_state']!,
+          _summaryStateMeta,
         ),
       );
     }
@@ -248,6 +290,14 @@ class $DocumentsTable extends Documents
         DriftSqlType.string,
         data['${effectivePrefix}results_note'],
       ),
+      summaryRewrite: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}summary_rewrite'],
+      ),
+      summaryState: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}summary_state'],
+      ),
       tags: $DocumentsTable.$convertertags.fromSql(
         attachedDatabase.typeMapping.read(
           DriftSqlType.string,
@@ -290,6 +340,8 @@ class Document extends DataClass implements Insertable<Document> {
   final String extractedText;
   final List<DocumentResult> results;
   final String? resultsNote;
+  final String? summaryRewrite;
+  final String? summaryState;
   final List<String> tags;
   final String? filePath;
   final String? filePaths;
@@ -302,6 +354,8 @@ class Document extends DataClass implements Insertable<Document> {
     required this.extractedText,
     required this.results,
     this.resultsNote,
+    this.summaryRewrite,
+    this.summaryState,
     required this.tags,
     this.filePath,
     this.filePaths,
@@ -326,6 +380,12 @@ class Document extends DataClass implements Insertable<Document> {
     }
     if (!nullToAbsent || resultsNote != null) {
       map['results_note'] = Variable<String>(resultsNote);
+    }
+    if (!nullToAbsent || summaryRewrite != null) {
+      map['summary_rewrite'] = Variable<String>(summaryRewrite);
+    }
+    if (!nullToAbsent || summaryState != null) {
+      map['summary_state'] = Variable<String>(summaryState);
     }
     {
       map['tags'] = Variable<String>(
@@ -355,6 +415,12 @@ class Document extends DataClass implements Insertable<Document> {
       resultsNote: resultsNote == null && nullToAbsent
           ? const Value.absent()
           : Value(resultsNote),
+      summaryRewrite: summaryRewrite == null && nullToAbsent
+          ? const Value.absent()
+          : Value(summaryRewrite),
+      summaryState: summaryState == null && nullToAbsent
+          ? const Value.absent()
+          : Value(summaryState),
       tags: Value(tags),
       filePath: filePath == null && nullToAbsent
           ? const Value.absent()
@@ -381,6 +447,8 @@ class Document extends DataClass implements Insertable<Document> {
       extractedText: serializer.fromJson<String>(json['extractedText']),
       results: serializer.fromJson<List<DocumentResult>>(json['results']),
       resultsNote: serializer.fromJson<String?>(json['resultsNote']),
+      summaryRewrite: serializer.fromJson<String?>(json['summaryRewrite']),
+      summaryState: serializer.fromJson<String?>(json['summaryState']),
       tags: serializer.fromJson<List<String>>(json['tags']),
       filePath: serializer.fromJson<String?>(json['filePath']),
       filePaths: serializer.fromJson<String?>(json['filePaths']),
@@ -398,6 +466,8 @@ class Document extends DataClass implements Insertable<Document> {
       'extractedText': serializer.toJson<String>(extractedText),
       'results': serializer.toJson<List<DocumentResult>>(results),
       'resultsNote': serializer.toJson<String?>(resultsNote),
+      'summaryRewrite': serializer.toJson<String?>(summaryRewrite),
+      'summaryState': serializer.toJson<String?>(summaryState),
       'tags': serializer.toJson<List<String>>(tags),
       'filePath': serializer.toJson<String?>(filePath),
       'filePaths': serializer.toJson<String?>(filePaths),
@@ -413,6 +483,8 @@ class Document extends DataClass implements Insertable<Document> {
     String? extractedText,
     List<DocumentResult>? results,
     Value<String?> resultsNote = const Value.absent(),
+    Value<String?> summaryRewrite = const Value.absent(),
+    Value<String?> summaryState = const Value.absent(),
     List<String>? tags,
     Value<String?> filePath = const Value.absent(),
     Value<String?> filePaths = const Value.absent(),
@@ -425,6 +497,10 @@ class Document extends DataClass implements Insertable<Document> {
     extractedText: extractedText ?? this.extractedText,
     results: results ?? this.results,
     resultsNote: resultsNote.present ? resultsNote.value : this.resultsNote,
+    summaryRewrite: summaryRewrite.present
+        ? summaryRewrite.value
+        : this.summaryRewrite,
+    summaryState: summaryState.present ? summaryState.value : this.summaryState,
     tags: tags ?? this.tags,
     filePath: filePath.present ? filePath.value : this.filePath,
     filePaths: filePaths.present ? filePaths.value : this.filePaths,
@@ -445,6 +521,12 @@ class Document extends DataClass implements Insertable<Document> {
       resultsNote: data.resultsNote.present
           ? data.resultsNote.value
           : this.resultsNote,
+      summaryRewrite: data.summaryRewrite.present
+          ? data.summaryRewrite.value
+          : this.summaryRewrite,
+      summaryState: data.summaryState.present
+          ? data.summaryState.value
+          : this.summaryState,
       tags: data.tags.present ? data.tags.value : this.tags,
       filePath: data.filePath.present ? data.filePath.value : this.filePath,
       filePaths: data.filePaths.present ? data.filePaths.value : this.filePaths,
@@ -464,6 +546,8 @@ class Document extends DataClass implements Insertable<Document> {
           ..write('extractedText: $extractedText, ')
           ..write('results: $results, ')
           ..write('resultsNote: $resultsNote, ')
+          ..write('summaryRewrite: $summaryRewrite, ')
+          ..write('summaryState: $summaryState, ')
           ..write('tags: $tags, ')
           ..write('filePath: $filePath, ')
           ..write('filePaths: $filePaths, ')
@@ -481,6 +565,8 @@ class Document extends DataClass implements Insertable<Document> {
     extractedText,
     results,
     resultsNote,
+    summaryRewrite,
+    summaryState,
     tags,
     filePath,
     filePaths,
@@ -497,6 +583,8 @@ class Document extends DataClass implements Insertable<Document> {
           other.extractedText == this.extractedText &&
           other.results == this.results &&
           other.resultsNote == this.resultsNote &&
+          other.summaryRewrite == this.summaryRewrite &&
+          other.summaryState == this.summaryState &&
           other.tags == this.tags &&
           other.filePath == this.filePath &&
           other.filePaths == this.filePaths &&
@@ -511,6 +599,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
   final Value<String> extractedText;
   final Value<List<DocumentResult>> results;
   final Value<String?> resultsNote;
+  final Value<String?> summaryRewrite;
+  final Value<String?> summaryState;
   final Value<List<String>> tags;
   final Value<String?> filePath;
   final Value<String?> filePaths;
@@ -524,6 +614,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
     this.extractedText = const Value.absent(),
     this.results = const Value.absent(),
     this.resultsNote = const Value.absent(),
+    this.summaryRewrite = const Value.absent(),
+    this.summaryState = const Value.absent(),
     this.tags = const Value.absent(),
     this.filePath = const Value.absent(),
     this.filePaths = const Value.absent(),
@@ -538,6 +630,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
     this.extractedText = const Value.absent(),
     this.results = const Value.absent(),
     this.resultsNote = const Value.absent(),
+    this.summaryRewrite = const Value.absent(),
+    this.summaryState = const Value.absent(),
     this.tags = const Value.absent(),
     this.filePath = const Value.absent(),
     this.filePaths = const Value.absent(),
@@ -555,6 +649,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
     Expression<String>? extractedText,
     Expression<String>? results,
     Expression<String>? resultsNote,
+    Expression<String>? summaryRewrite,
+    Expression<String>? summaryState,
     Expression<String>? tags,
     Expression<String>? filePath,
     Expression<String>? filePaths,
@@ -569,6 +665,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
       if (extractedText != null) 'extracted_text': extractedText,
       if (results != null) 'results': results,
       if (resultsNote != null) 'results_note': resultsNote,
+      if (summaryRewrite != null) 'summary_rewrite': summaryRewrite,
+      if (summaryState != null) 'summary_state': summaryState,
       if (tags != null) 'tags': tags,
       if (filePath != null) 'file_path': filePath,
       if (filePaths != null) 'file_paths': filePaths,
@@ -585,6 +683,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
     Value<String>? extractedText,
     Value<List<DocumentResult>>? results,
     Value<String?>? resultsNote,
+    Value<String?>? summaryRewrite,
+    Value<String?>? summaryState,
     Value<List<String>>? tags,
     Value<String?>? filePath,
     Value<String?>? filePaths,
@@ -599,6 +699,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
       extractedText: extractedText ?? this.extractedText,
       results: results ?? this.results,
       resultsNote: resultsNote ?? this.resultsNote,
+      summaryRewrite: summaryRewrite ?? this.summaryRewrite,
+      summaryState: summaryState ?? this.summaryState,
       tags: tags ?? this.tags,
       filePath: filePath ?? this.filePath,
       filePaths: filePaths ?? this.filePaths,
@@ -635,6 +737,12 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
     if (resultsNote.present) {
       map['results_note'] = Variable<String>(resultsNote.value);
     }
+    if (summaryRewrite.present) {
+      map['summary_rewrite'] = Variable<String>(summaryRewrite.value);
+    }
+    if (summaryState.present) {
+      map['summary_state'] = Variable<String>(summaryState.value);
+    }
     if (tags.present) {
       map['tags'] = Variable<String>(
         $DocumentsTable.$convertertags.toSql(tags.value),
@@ -665,6 +773,8 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
           ..write('extractedText: $extractedText, ')
           ..write('results: $results, ')
           ..write('resultsNote: $resultsNote, ')
+          ..write('summaryRewrite: $summaryRewrite, ')
+          ..write('summaryState: $summaryState, ')
           ..write('tags: $tags, ')
           ..write('filePath: $filePath, ')
           ..write('filePaths: $filePaths, ')
@@ -1423,6 +1533,8 @@ typedef $$DocumentsTableCreateCompanionBuilder =
       Value<String> extractedText,
       Value<List<DocumentResult>> results,
       Value<String?> resultsNote,
+      Value<String?> summaryRewrite,
+      Value<String?> summaryState,
       Value<List<String>> tags,
       Value<String?> filePath,
       Value<String?> filePaths,
@@ -1438,6 +1550,8 @@ typedef $$DocumentsTableUpdateCompanionBuilder =
       Value<String> extractedText,
       Value<List<DocumentResult>> results,
       Value<String?> resultsNote,
+      Value<String?> summaryRewrite,
+      Value<String?> summaryState,
       Value<List<String>> tags,
       Value<String?> filePath,
       Value<String?> filePaths,
@@ -1492,6 +1606,16 @@ class $$DocumentsTableFilterComposer
 
   ColumnFilters<String> get resultsNote => $composableBuilder(
     column: $table.resultsNote,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get summaryRewrite => $composableBuilder(
+    column: $table.summaryRewrite,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get summaryState => $composableBuilder(
+    column: $table.summaryState,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1561,6 +1685,16 @@ class $$DocumentsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get summaryRewrite => $composableBuilder(
+    column: $table.summaryRewrite,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get summaryState => $composableBuilder(
+    column: $table.summaryState,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get tags => $composableBuilder(
     column: $table.tags,
     builder: (column) => ColumnOrderings(column),
@@ -1616,6 +1750,16 @@ class $$DocumentsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get summaryRewrite => $composableBuilder(
+    column: $table.summaryRewrite,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get summaryState => $composableBuilder(
+    column: $table.summaryState,
+    builder: (column) => column,
+  );
+
   GeneratedColumnWithTypeConverter<List<String>, String> get tags =>
       $composableBuilder(column: $table.tags, builder: (column) => column);
 
@@ -1666,6 +1810,8 @@ class $$DocumentsTableTableManager
                 Value<String> extractedText = const Value.absent(),
                 Value<List<DocumentResult>> results = const Value.absent(),
                 Value<String?> resultsNote = const Value.absent(),
+                Value<String?> summaryRewrite = const Value.absent(),
+                Value<String?> summaryState = const Value.absent(),
                 Value<List<String>> tags = const Value.absent(),
                 Value<String?> filePath = const Value.absent(),
                 Value<String?> filePaths = const Value.absent(),
@@ -1679,6 +1825,8 @@ class $$DocumentsTableTableManager
                 extractedText: extractedText,
                 results: results,
                 resultsNote: resultsNote,
+                summaryRewrite: summaryRewrite,
+                summaryState: summaryState,
                 tags: tags,
                 filePath: filePath,
                 filePaths: filePaths,
@@ -1694,6 +1842,8 @@ class $$DocumentsTableTableManager
                 Value<String> extractedText = const Value.absent(),
                 Value<List<DocumentResult>> results = const Value.absent(),
                 Value<String?> resultsNote = const Value.absent(),
+                Value<String?> summaryRewrite = const Value.absent(),
+                Value<String?> summaryState = const Value.absent(),
                 Value<List<String>> tags = const Value.absent(),
                 Value<String?> filePath = const Value.absent(),
                 Value<String?> filePaths = const Value.absent(),
@@ -1707,6 +1857,8 @@ class $$DocumentsTableTableManager
                 extractedText: extractedText,
                 results: results,
                 resultsNote: resultsNote,
+                summaryRewrite: summaryRewrite,
+                summaryState: summaryState,
                 tags: tags,
                 filePath: filePath,
                 filePaths: filePaths,

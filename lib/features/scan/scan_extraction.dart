@@ -246,7 +246,7 @@ ScanExtraction? parseScanExtraction(
   // occur in the OCR. Drop the summary rather than show an invented dose.
   if (type == DocumentType.prescription &&
       note != null &&
-      !_numbersGrounded(ocrText, note)) {
+      !numbersGrounded(ocrText, note)) {
     note = null;
   }
 
@@ -365,7 +365,9 @@ bool _phraseGrounded(String normOcr, String value) {
   return phrase.trim().isNotEmpty && normOcr.contains(phrase);
 }
 
-bool _numbersGrounded(String ocrText, String value) {
+/// True when every number in [value] also appears in [ocrText]. A model may
+/// rephrase, never renumber.
+bool numbersGrounded(String ocrText, String value) {
   final source = RegExp(
     r'\d+',
   ).allMatches(ocrText).map((match) => match.group(0)!).toSet();
@@ -427,6 +429,9 @@ final _refusalRe = RegExp(
   r"i (can't|cannot|'m sorry)|as an ai|unknown|not (sure|found)|n/a",
   caseSensitive: false,
 );
+
+/// True when the model apologised or hedged instead of answering.
+bool looksLikeModelRefusal(String value) => _refusalRe.hasMatch(value);
 
 String? _asString(Object? v) => v is String ? v : (v == null ? null : '$v');
 

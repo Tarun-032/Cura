@@ -92,6 +92,11 @@ class Documents extends Table {
   TextColumn get results =>
       text().map(const _ResultsConverter()).withDefault(const Constant('[]'))();
   TextColumn get resultsNote => text().nullable()();
+  // The model's readable rewrite of [resultsNote]. Display only: resultsNote
+  // stays verbatim because Ask searches and quotes it.
+  TextColumn get summaryRewrite => text().nullable()();
+  // 'pending' (not yet attempted), 'retry' (one attempt failed), or null.
+  TextColumn get summaryState => text().nullable()();
   TextColumn get tags =>
       text().map(const _TagsConverter()).withDefault(const Constant('[]'))();
   // Legacy single-image path (v1/v2 rows). New scans write [filePaths] instead;
@@ -143,7 +148,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -163,6 +168,12 @@ class AppDatabase extends _$AppDatabase {
       // can preserve its searchable text, vectors, and native page sizes.
       if (from < 4) {
         await m.addColumn(documents, documents.sourcePdfPath);
+      }
+      // v4 -> v5: a background-written readable summary beside the verbatim
+      // one. Existing rows stay null, so nothing old is ever queued.
+      if (from < 5) {
+        await m.addColumn(documents, documents.summaryRewrite);
+        await m.addColumn(documents, documents.summaryState);
       }
     },
   );

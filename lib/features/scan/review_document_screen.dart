@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme/app_colors.dart';
 import '../../core/widgets/document_image.dart';
 import '../../core/widgets/hatched_placeholder.dart';
+import '../../core/widgets/working_label.dart';
 import '../ai/ai_providers.dart';
 import '../library/document.dart';
 import '../pdf_import/pdf_import_service.dart';
@@ -15,6 +16,7 @@ import 'receipt_parser.dart'
     show isFinalReceiptAmountLabel, isReceiptSummaryLabel;
 import 'scan_extraction.dart';
 import 'scan_service.dart';
+import 'summary_rewriter.dart';
 
 /// Confirm-before-save screen. Shown after a scan with everything pre-filled and
 /// editable; also reused to edit an existing document.
@@ -405,6 +407,10 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
 
   void _save() {
     _saved = true; // stop any late AI patch from touching a popped screen
+    // A hand-edited summary must never sit under a rewrite of the old text.
+    final noteEdited =
+        (_resultsNote?.trim() ?? '') !=
+        (widget.draft.resultsNote?.trim() ?? '');
     final doc = widget.draft.copyWith(
       title: _titleController.text.trim().isEmpty
           ? widget.draft.title
@@ -421,6 +427,8 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
           ? null
           : _resultsNote!.trim(),
       clearResultsNote: _resultsNote == null || _resultsNote!.trim().isEmpty,
+      clearSummaryRewrite: noteEdited,
+      clearSummaryState: noteEdited,
     );
     Navigator.of(context).pop(doc);
   }
@@ -541,6 +549,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
         ),
       ),
     ),
+    ?_rewriteNotice(),
     const SizedBox(height: 20),
     Row(
       children: [
@@ -655,7 +664,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                             ),
                           ),
                           if (_isRefining(ScanRefinementField.title))
-                            const _FieldRefinementStatus(
+                            const WorkingLabel(
                               key: ValueKey('title-refinement-status'),
                               text: 'Writing title…',
                             )
@@ -768,6 +777,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                             ),
                           ),
                         ),
+                        ?_rewriteNotice(),
                         const SizedBox(height: 20),
                       ],
                     ] else ...[
@@ -843,7 +853,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                                 ScanRefinementField.receiptNote,
                               )) ...[
                                 const SizedBox(width: 10),
-                                const _FieldRefinementStatus(
+                                const WorkingLabel(
                                   key: ValueKey('receipt-note-refinement-status'),
                                   text: 'Writing bill note…',
                                 ),
@@ -922,6 +932,27 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
     );
   }
 
+  /// Sets expectations for the rewrite that starts once this is saved. Null
+  /// when this summary is not one that gets rewritten, or when editing an
+  /// existing record, whose rewrite has already happened.
+  Widget? _rewriteNotice() {
+    if (widget.isEditing) return null;
+    if (!needsSummaryRewrite(type: _type, note: _resultsNote)) return null;
+    final remote =
+        ref.watch(activeEngineProvider).value?.isRemote ?? false;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: _label(
+        remote
+            ? 'Cura will rewrite this summary in the background so it reads '
+                  'clearly. Names and personal details are removed before '
+                  'anything is sent.'
+            : 'Cura will rewrite this summary in the background so it reads '
+                  'clearly, on your device.',
+      ),
+    );
+  }
+
   Widget _label(String text) {
     return Text(
       text,
@@ -957,52 +988,10 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
         _label(text),
         const Spacer(),
         if (pending)
-          _FieldRefinementStatus(text: pendingText)
+          WorkingLabel(text: pendingText)
         else
           idleTrailing!,
       ],
-    );
-  }
-}
-
-class _FieldRefinementStatus extends StatelessWidget {
-  const _FieldRefinementStatus({super.key, required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final reduceMotion =
-        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
-    return Semantics(
-      liveRegion: true,
-      label: text,
-      excludeSemantics: true,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (reduceMotion)
-            const Icon(Icons.more_horiz, size: 14, color: AppColors.secondary)
-          else
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 1.5,
-                color: AppColors.secondary,
-              ),
-            ),
-          const SizedBox(width: 6),
-          Text(
-            text,
-            style: const TextStyle(
-              fontFamily: 'PlusJakartaSans',
-              fontSize: 12,
-              color: AppColors.secondary,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

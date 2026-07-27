@@ -1,18 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/app_colors.dart';
+import '../../core/data/providers.dart';
 import '../../core/widgets/document_image.dart';
 import '../../core/widgets/hatched_placeholder.dart';
+import '../../core/widgets/working_label.dart';
 import '../export/pdf_exporter.dart';
 import '../scan/review_document_screen.dart';
+import '../scan/summary_rewriter.dart';
 import 'document.dart';
 import 'manual_entry_screen.dart';
 
 /// View a single saved document: the document is the
 /// hero; actions (Export / Edit / Delete) are quiet. All actions are local.
-class DocumentDetailScreen extends StatefulWidget {
+class DocumentDetailScreen extends ConsumerStatefulWidget {
   const DocumentDetailScreen({
     super.key,
     required this.document,
@@ -25,16 +29,28 @@ class DocumentDetailScreen extends StatefulWidget {
   final ValueChanged<CuraDocument> onDelete;
 
   @override
-  State<DocumentDetailScreen> createState() => _DocumentDetailScreenState();
+  ConsumerState<DocumentDetailScreen> createState() =>
+      _DocumentDetailScreenState();
 }
 
-class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
+class _DocumentDetailScreenState extends ConsumerState<DocumentDetailScreen> {
   late CuraDocument _document;
 
   @override
   void initState() {
     super.initState();
     _document = widget.document;
+  }
+
+  /// Re-reads the stored row so a background summary rewrite lands on an open
+  /// page, and keeps [_document] on it so Export and Edit see it too. Falls back
+  /// to the local copy while the stream loads, and after a delete, when the row
+  /// is gone but this screen is still popping.
+  CuraDocument _syncFromStore() {
+    for (final row in ref.watch(documentsProvider).value ?? const []) {
+      if (row.id == _document.id) return _document = row;
+    }
+    return _document;
   }
 
   Future<void> _edit() async {
@@ -158,7 +174,10 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final doc = _document;
+    final doc = _syncFromStore();
+    final rewriting =
+        doc.summaryState == kSummaryPending ||
+        doc.summaryState == kSummaryRetry;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark.copyWith(
@@ -217,7 +236,10 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                             if (doc.type == DocumentType.prescription) ...[
                               if (doc.resultsNote != null &&
                                   doc.resultsNote!.trim().isNotEmpty)
-                                _SummaryCard(text: doc.resultsNote!),
+                                _SummaryCard(
+                                  text: doc.summaryRewrite ?? doc.resultsNote!,
+                                  rewriting: rewriting,
+                                ),
                               if (doc.resultsNote != null &&
                                   doc.resultsNote!.trim().isNotEmpty &&
                                   doc.results.isNotEmpty)
@@ -232,7 +254,10 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                               _ResultsCard(document: doc)
                             else if (doc.resultsNote != null &&
                                 doc.resultsNote!.trim().isNotEmpty)
-                              _SummaryCard(text: doc.resultsNote!)
+                              _SummaryCard(
+                                text: doc.summaryRewrite ?? doc.resultsNote!,
+                                rewriting: rewriting,
+                              )
                             else
                               _TextCard(text: doc.extractedText),
                             const SizedBox(height: 22),
@@ -468,9 +493,13 @@ class _PrescriptionMedicinesCard extends StatelessWidget {
 /// results table. Stateful only for the scroll controller: a long summary
 /// scrolls inside the card rather than pushing the actions down the page.
 class _SummaryCard extends StatefulWidget {
-  const _SummaryCard({required this.text});
+  const _SummaryCard({required this.text, this.rewriting = false});
 
   final String text;
+
+  /// The model is still turning the scraped sections into readable prose. The
+  /// deterministic text below stays readable meanwhile.
+  final bool rewriting;
 
   @override
   State<_SummaryCard> createState() => _SummaryCardState();
@@ -498,7 +527,15 @@ class _SummaryCardState extends State<_SummaryCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Summary', style: textTheme.titleMedium),
+          Row(
+            children: [
+              Text('Summary', style: textTheme.titleMedium),
+              if (widget.rewriting) ...[
+                const Spacer(),
+                const WorkingLabel(text: 'Rewriting…'),
+              ],
+            ],
+          ),
           const SizedBox(height: 10),
           ConstrainedBox(
             constraints: const BoxConstraints(

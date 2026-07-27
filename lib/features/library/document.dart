@@ -93,6 +93,8 @@ class CuraDocument {
     this.extractedText = '',
     this.results = const [],
     this.resultsNote,
+    this.summaryRewrite,
+    this.summaryState,
     this.tags = const [],
     this.pages = const [],
     this.sourcePdfPath,
@@ -111,6 +113,14 @@ class CuraDocument {
 
   /// Optional footnote under the Results rows.
   final String? resultsNote;
+
+  /// The model's readable rewrite of [resultsNote], written in the background
+  /// after a scan is saved. Display only: [resultsNote] stays verbatim because
+  /// Ask searches and quotes it.
+  final String? summaryRewrite;
+
+  /// 'pending', 'retry', or null once the rewrite is settled either way.
+  final String? summaryState;
 
   /// Free-form tags, e.g. ["bloodwork", "annual"].
   final List<String> tags;
@@ -140,6 +150,10 @@ class CuraDocument {
     List<DocumentResult>? results,
     String? resultsNote,
     bool clearResultsNote = false,
+    String? summaryRewrite,
+    bool clearSummaryRewrite = false,
+    String? summaryState,
+    bool clearSummaryState = false,
     String? sourcePdfPath,
     bool clearSourcePdf = false,
   }) {
@@ -151,6 +165,12 @@ class CuraDocument {
       extractedText: extractedText ?? this.extractedText,
       results: results ?? this.results,
       resultsNote: clearResultsNote ? null : (resultsNote ?? this.resultsNote),
+      summaryRewrite: clearSummaryRewrite
+          ? null
+          : (summaryRewrite ?? this.summaryRewrite),
+      summaryState: clearSummaryState
+          ? null
+          : (summaryState ?? this.summaryState),
       tags: tags,
       pages: pages ?? this.pages,
       sourcePdfPath: clearSourcePdf

@@ -17,6 +17,7 @@ import '../ai/remote/remote_ai_store.dart';
 import '../ai/retrieval.dart';
 import '../ai/widgets/model_download_sheet.dart';
 import '../library/document.dart';
+import '../scan/summary_rewriter.dart';
 import 'ask_prompt_rotation.dart';
 import 'chat_models.dart';
 import 'voice_input_controller.dart';
@@ -501,6 +502,9 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     );
     if (!mounted || seq != _sendSeq) return;
     setState(() => _busy = false);
+    // The model is free again, so a summary rewrite this answer preempted can
+    // pick up where it left off instead of waiting for the next launch.
+    unawaited(ref.read(summaryRewriterProvider).sweep());
   }
 
   /// Stops the model, freezes the reveal, saves the partial and restores the
