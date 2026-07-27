@@ -313,4 +313,86 @@ void main() {
     expect(find.text('Diagnosis: recovered.'), findsOneWidget);
     expect(find.text('Cloud-generated narrative summary.'), findsNothing);
   });
+
+  group('the background rewrite hint', () {
+    // Long enough to clear the one-sentence floor in needsSummaryRewrite.
+    const scraped =
+        'Indication: Persistent cough for six weeks. Findings: Right lower '
+        'lobe consolidation measuring 3.2 cm. Impression: pneumonia.';
+
+    Future<void> pumpReview(
+      WidgetTester tester, {
+      required CuraDocument draft,
+      bool isEditing = false,
+    }) async {
+      useTallTestView(tester);
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: ReviewDocumentScreen(draft: draft, isEditing: isEditing),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('sits on the Summary row and explains itself on tap', (
+      tester,
+    ) async {
+      await pumpReview(
+        tester,
+        draft: document(
+          type: DocumentType.imaging,
+          title: 'Chest CT',
+          text: 'CHEST CT\n$scraped',
+          note: scraped,
+        ),
+      );
+
+      expect(find.text('Cura will tidy this up'), findsOneWidget);
+      // The old full-width paragraph is gone from the page itself.
+      expect(find.textContaining('Cura will rewrite'), findsNothing);
+
+      await tester.tap(find.text('Cura will tidy this up'));
+      await tester.pumpAndSettle();
+
+      // A popup hanging off the icon, not a full-screen dialog.
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.textContaining('Cura will rewrite'), findsOneWidget);
+
+      // Tapping away closes it.
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Cura will rewrite'), findsNothing);
+    });
+
+    testWidgets('is absent when editing a saved record', (tester) async {
+      await pumpReview(
+        tester,
+        isEditing: true,
+        draft: document(
+          type: DocumentType.imaging,
+          title: 'Chest CT',
+          text: 'CHEST CT\n$scraped',
+          note: scraped,
+        ),
+      );
+
+      expect(find.text('Summary'), findsOneWidget);
+      expect(find.text('Cura will tidy this up'), findsNothing);
+    });
+
+    testWidgets('is absent on a summary that never gets rewritten', (
+      tester,
+    ) async {
+      // A lab report's note is a computed counts line, not a scraped dump.
+      await pumpReview(
+        tester,
+        draft: document(note: '4 results · all within the normal range'),
+      );
+
+      expect(find.text('Cura will tidy this up'), findsNothing);
+    });
+  });
 }

@@ -62,6 +62,8 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
   // track. One controller covers both Summary variants, which are exclusive.
   final ScrollController _textScrollController = ScrollController();
   final ScrollController _summaryScrollController = ScrollController();
+  // Anchors the rewrite popup under the icon it belongs to.
+  final GlobalKey _rewriteHintKey = GlobalKey();
   late DocumentType _type;
   late DateTime _date;
   List<String> _pages = const [];
@@ -525,7 +527,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
   }
 
   List<Widget> _prescriptionSections(TextTheme textTheme) => [
-    _label('Summary'),
+    _summaryLabel(),
     const SizedBox(height: 8),
     _FieldBox(
       child: ConstrainedBox(
@@ -549,7 +551,6 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
         ),
       ),
     ),
-    ?_rewriteNotice(),
     const SizedBox(height: 20),
     Row(
       children: [
@@ -756,7 +757,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                     ] else if (_summaryShaped) ...[
                       if (_resultsNote != null &&
                           _resultsNote!.trim().isNotEmpty) ...[
-                        _label('Summary'),
+                        _summaryLabel(),
                         const SizedBox(height: 8),
                         _FieldBox(
                           child: ConstrainedBox(
@@ -777,7 +778,6 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                             ),
                           ),
                         ),
-                        ?_rewriteNotice(),
                         const SizedBox(height: 20),
                       ],
                     ] else ...[
@@ -932,24 +932,93 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
     );
   }
 
-  /// Sets expectations for the rewrite that starts once this is saved. Null
-  /// when this summary is not one that gets rewritten, or when editing an
-  /// existing record, whose rewrite has already happened.
-  Widget? _rewriteNotice() {
-    if (widget.isEditing) return null;
-    if (!needsSummaryRewrite(type: _type, note: _resultsNote)) return null;
-    final remote =
-        ref.watch(activeEngineProvider).value?.isRemote ?? false;
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: _label(
-        remote
-            ? 'Cura will rewrite this summary in the background so it reads '
-                  'clearly. Names and personal details are removed before '
-                  'anything is sent.'
-            : 'Cura will rewrite this summary in the background so it reads '
-                  'clearly, on your device.',
+  /// The Summary heading, with a tappable hint when a background rewrite is
+  /// coming. Matches the Medicines and Extracted text rows. Editing an existing
+  /// record shows no hint: its rewrite has already happened.
+  Widget _summaryLabel() {
+    if (widget.isEditing ||
+        !needsSummaryRewrite(type: _type, note: _resultsNote)) {
+      return _label('Summary');
+    }
+    final remote = ref.watch(activeEngineProvider).value?.isRemote ?? false;
+    return Row(
+      children: [
+        _label('Summary'),
+        const Spacer(),
+        InkWell(
+          key: _rewriteHintKey,
+          onTap: () => _showRewriteInfo(remote),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Cura will tidy this up',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+                const SizedBox(width: 4),
+                const Icon(
+                  Icons.info_outline,
+                  size: 15,
+                  color: AppColors.faint,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// A small popup hanging off the icon, like the Ask message menu. A dialog
+  /// would take the whole screen for one sentence.
+  void _showRewriteInfo(bool remote) {
+    final anchor =
+        _rewriteHintKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (anchor == null || overlay == null) return;
+    final topLeft = anchor.localToGlobal(Offset.zero, ancestor: overlay);
+    final bottomRight = anchor.localToGlobal(
+      anchor.size.bottomRight(Offset.zero),
+      ancestor: overlay,
+    );
+    showMenu<void>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        topLeft.dx,
+        bottomRight.dy + 4,
+        overlay.size.width - bottomRight.dx,
+        overlay.size.height - bottomRight.dy,
       ),
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.hairline),
+      ),
+      constraints: const BoxConstraints(maxWidth: 260),
+      items: [
+        PopupMenuItem<void>(
+          height: 0,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Text(
+            remote
+                ? 'Cura will rewrite this summary in the background so it '
+                      'reads clearly. Names and personal details are removed '
+                      'before anything is sent.'
+                : 'Cura will rewrite this summary in the background so it '
+                      'reads clearly, on your device.',
+            style: const TextStyle(
+              fontFamily: 'PlusJakartaSans',
+              fontSize: 13,
+              height: 1.4,
+              color: AppColors.ink,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
