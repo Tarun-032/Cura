@@ -49,11 +49,15 @@ class _ParsedAnswer {
 
 enum ScanExtractionMode { metadata, receipt, tableRepair }
 
-/// Cancellation bridge for both streaming backends. Attaching after cancellation
-/// fires the callback immediately, covering a timeout during model load.
-class _ScanRefinementCancellation {
+/// Stops a streaming backend: `stop()` locally, `close()` on the cloud client.
+/// Attaching after a cancel fires at once, covering a stop during model load.
+class GenerationCancellation {
   bool cancelled = false;
   void Function()? _stop;
+  final _done = Completer<void>();
+
+  /// Completes on [cancel]. See [untilCancelled].
+  Future<void> get done => _done.future;
 
   void attach(void Function() stop) {
     _stop = stop;
@@ -66,7 +70,30 @@ class _ScanRefinementCancellation {
     if (cancelled) return;
     cancelled = true;
     _stop?.call();
+    _done.complete();
   }
+}
+
+/// Ends [source] on cancel: `LlamaController.stop()` leaves its token stream
+/// open, so waiting for the backend to close it hangs forever.
+Stream<T> untilCancelled<T>(
+  Stream<T> source,
+  GenerationCancellation? cancellation,
+) {
+  if (cancellation == null) return source;
+  final out = StreamController<T>();
+  final sub = source.listen(
+    out.add,
+    onError: out.addError,
+    onDone: () {
+      if (!out.isClosed) out.close();
+    },
+  );
+  cancellation.done.whenComplete(() {
+    if (!out.isClosed) out.close();
+  });
+  out.onCancel = sub.cancel;
+  return out.stream;
 }
 
 /// Runs the model for Ask and for optional background refinement of a fresh scan
@@ -115,6 +142,16 @@ class AiService {
     _kvOpenAnswer = false;
     _kvTokensEst = 0;
   }
+
+  /// Halts llama.cpp. Cancelling the Dart subscription alone would not.
+  void _stopLocal() {
+    final ctrl = _ctrl;
+    if (ctrl != null) unawaited(ctrl.stop());
+  }
+
+  /// Drops the warm cache. Ask calls this after editing a question, since the
+  /// cache still holds the turn that was removed.
+  Future<void> resetConversationCache() => _clearKv();
 
   /// Answer ceiling for the cloud engine. No small context window to clamp
   /// against, and the provider still stops at the model's end-of-turn token.
@@ -287,6 +324,8 @@ class AiService {
   ///
   /// [history] is the prior conversation (oldest→newest), giving the session
   /// memory for follow-ups. Only a bounded slice is used — see [_boundedHistory].
+  ///
+  /// [cancellation] stops the answer mid-flight; the partial still arrives.
   Stream<AskChunk> answerQuestionStream(
     String question,
     List<CuraDocument> docs, {
@@ -295,6 +334,7 @@ class AiService {
     Set<String> shownSourceIds = const {},
     Set<String> focusDocIds = const {},
     List<String> orderedFocusDocIds = const [],
+    GenerationCancellation? cancellation,
   }) async* {
     final q = question.trim();
     if (q.isEmpty) {
@@ -494,6 +534,7 @@ class AiService {
         cardSources: cardSources,
         cardTotal: cardTotal,
         cardCandidates: cardCandidates,
+        cancellation: cancellation,
       );
       return;
     }
@@ -526,6 +567,7 @@ class AiService {
           thinkMode,
           sw,
           loadMs,
+          cancellation,
         );
         return;
       }
@@ -590,26 +632,40 @@ class AiService {
       final buf = StringBuffer();
       var tokens = 0;
       var ttftMs = -1;
-      await for (final tok in _ctrl!.generate(
-        prompt: feed,
-        temperature: routed != null ? 0.1 : 0.2,
-        topK: 40,
-        topP: 0.95,
-        maxTokens: maxTokens,
-      )) {
-        if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds - loadMs;
-        tokens++;
-        buf.write(tok);
-        if (routed == null) {
-          final p = _split(buf.toString());
-          yield AskChunk(p.answer, thinking: p.thinking, source: source);
+      cancellation?.attach(_stopLocal);
+      try {
+        await for (final tok in untilCancelled(
+          _ctrl!.generate(
+            prompt: feed,
+            temperature: routed != null ? 0.1 : 0.2,
+            topK: 40,
+            topP: 0.95,
+            maxTokens: maxTokens,
+          ),
+          cancellation,
+        )) {
+          if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds - loadMs;
+          tokens++;
+          buf.write(tok);
+          if (routed == null) {
+            final p = _split(buf.toString());
+            yield AskChunk(p.answer, thinking: p.thinking, source: source);
+          }
+          if (cancellation?.cancelled ?? false) break;
         }
+      } finally {
+        cancellation?.detach();
       }
 
       // The answer sits open in the cache (no trailing <|im_end|>), so record it
-      // for the next turn to stitch onto and grow the token estimate.
-      _kvOpenAnswer = true;
-      _kvTokensEst = promptTokensEst + tokens;
+      // for the next turn to stitch onto and grow the token estimate. A stop
+      // cuts it where the estimate cannot see, so that cache goes.
+      if (cancellation?.cancelled ?? false) {
+        await _clearKv();
+      } else {
+        _kvOpenAnswer = true;
+        _kvTokensEst = promptTokensEst + tokens;
+      }
 
       final genMs = sw.elapsedMilliseconds - loadMs - (ttftMs < 0 ? 0 : ttftMs);
       final tps = genMs > 0 ? (tokens * 1000 / genMs).toStringAsFixed(1) : '0';
@@ -653,6 +709,8 @@ class AiService {
     } catch (_) {
       // Cache state is now uncertain — invalidate so the next question rebuilds.
       await _clearKv();
+      // A stop is not a failure: the caller keeps what it already streamed.
+      if (cancellation?.cancelled ?? false) return;
       if (routed != null) {
         yield AskChunk(
           routed.text,
@@ -683,6 +741,7 @@ class AiService {
     bool thinkMode,
     Stopwatch sw,
     int loadMs,
+    GenerationCancellation? cancellation,
   ) async* {
     final messages = [
       ChatMessage(role: 'system', content: systemContent),
@@ -709,21 +768,30 @@ class AiService {
     final buf = StringBuffer();
     var tokens = 0;
     var ttftMs = -1;
-    await for (final tok in _ctrl!.generateChat(
-      messages: messages,
-      template: _spec!.template,
-      temperature: routed != null ? 0.1 : 0.2,
-      topK: 40,
-      topP: 0.95,
-      maxTokens: maxTokens,
-    )) {
-      if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds - loadMs;
-      tokens++;
-      buf.write(tok);
-      if (routed == null) {
-        final p = _split(buf.toString());
-        yield AskChunk(p.answer, thinking: p.thinking, source: source);
+    cancellation?.attach(_stopLocal);
+    try {
+      await for (final tok in untilCancelled(
+        _ctrl!.generateChat(
+          messages: messages,
+          template: _spec!.template,
+          temperature: routed != null ? 0.1 : 0.2,
+          topK: 40,
+          topP: 0.95,
+          maxTokens: maxTokens,
+        ),
+        cancellation,
+      )) {
+        if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds - loadMs;
+        tokens++;
+        buf.write(tok);
+        if (routed == null) {
+          final p = _split(buf.toString());
+          yield AskChunk(p.answer, thinking: p.thinking, source: source);
+        }
+        if (cancellation?.cancelled ?? false) break;
       }
+    } finally {
+      cancellation?.detach();
     }
     final genMs = sw.elapsedMilliseconds - loadMs - (ttftMs < 0 ? 0 : ttftMs);
     final tps = genMs > 0 ? (tokens * 1000 / genMs).toStringAsFixed(1) : '0';
@@ -789,6 +857,7 @@ class AiService {
     List<CuraDocument> cardSources = const [],
     int cardTotal = 0,
     List<CuraDocument> cardCandidates = const [],
+    GenerationCancellation? cancellation,
   }) async* {
     const privacyGate = CloudPrivacyGate();
     final messages = [
@@ -816,11 +885,16 @@ class AiService {
     final buf = StringBuffer();
     var tokens = 0;
     var ttftMs = -1;
+    // Closing the client tears down the SSE response mid-flight.
+    cancellation?.attach(backend.close);
     try {
-      await for (final tok in backend.generate(
-        messages: messages,
-        temperature: 0.2,
-        maxTokens: _remoteMaxTokens,
+      await for (final tok in untilCancelled(
+        backend.generate(
+          messages: messages,
+          temperature: 0.2,
+          maxTokens: _remoteMaxTokens,
+        ),
+        cancellation,
       )) {
         if (ttftMs < 0) ttftMs = sw.elapsedMilliseconds;
         tokens++;
@@ -839,17 +913,24 @@ class AiService {
           sources: cardSources,
           sourceTotal: cardTotal,
         );
+        if (cancellation?.cancelled ?? false) break;
       }
     } on RemoteAiException catch (e) {
-      yield AskChunk(e.message, done: true);
-      return;
+      // A stop closes the client, which lands here as a broken read.
+      if (!(cancellation?.cancelled ?? false)) {
+        yield AskChunk(e.message, done: true);
+        return;
+      }
     } catch (_) {
-      yield const AskChunk(
-        'I couldn\'t answer that just now. Please try again.',
-        done: true,
-      );
-      return;
+      if (!(cancellation?.cancelled ?? false)) {
+        yield const AskChunk(
+          'I couldn\'t answer that just now. Please try again.',
+          done: true,
+        );
+        return;
+      }
     } finally {
+      cancellation?.detach();
       backend.close();
     }
     debugPrint(
@@ -953,7 +1034,7 @@ class AiService {
       tableEvidence: tableEvidence,
     );
     if (fields.isEmpty) return null;
-    final cancellation = _ScanRefinementCancellation();
+    final cancellation = GenerationCancellation();
     return ScanRefinementJob(
       fields: fields,
       result: _extractDocumentFields(
@@ -984,10 +1065,7 @@ class AiService {
     // Bills already have deterministic type/date and geometry-derived amounts, so
     // the model fills only the two semantic fields Review shows.
     if (draftType == DocumentType.receipt) {
-      return const {
-        ScanRefinementField.title,
-        ScanRefinementField.receiptNote,
-      };
+      return const {ScanRefinementField.title, ScanRefinementField.receiptNote};
     }
     return {
       ScanRefinementField.type,
@@ -1006,7 +1084,7 @@ class AiService {
     required DocumentType draftType,
     required bool useRemote,
     required Set<ScanRefinementField> fields,
-    required _ScanRefinementCancellation cancellation,
+    required GenerationCancellation cancellation,
     String? title,
     TableRepairEvidence tableEvidence = const TableRepairEvidence([]),
   }) async {
@@ -1106,7 +1184,7 @@ class AiService {
   Future<String> _extractLocal(
     String selectedOcr, {
     required ScanExtractionMode mode,
-    required _ScanRefinementCancellation cancellation,
+    required GenerationCancellation cancellation,
   }) async {
     if (cancellation.cancelled) return '';
     await _ensureLoaded();
@@ -1166,7 +1244,7 @@ class AiService {
   Future<String> _extractRemote(
     String selectedOcr, {
     required ScanExtractionMode mode,
-    required _ScanRefinementCancellation cancellation,
+    required GenerationCancellation cancellation,
   }) async {
     if (cancellation.cancelled) return '';
     final backend = RemoteChatBackend(await _remote.config());

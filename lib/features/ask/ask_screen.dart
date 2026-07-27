@@ -11,6 +11,7 @@ import '../../core/data/providers.dart';
 import '../../core/widgets/cura_spark.dart';
 import '../ai/ai_models.dart';
 import '../ai/ai_providers.dart';
+import '../ai/ai_service.dart';
 import '../ai/query_router.dart';
 import '../ai/remote/remote_ai_store.dart';
 import '../ai/retrieval.dart';
@@ -129,6 +130,17 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   bool _showSuggestions = true;
   bool _busy = false;
 
+  // Halts the model itself, not just the reveal.
+  GenerationCancellation? _cancel;
+
+  // Bumped per question and by a stop. An answer that no longer holds the
+  // latest number writes nothing, even if its stream never ends.
+  int _sendSeq = 0;
+
+  // Message being re-asked, or null. The thread waits until it is sent.
+  int? _editingIndex;
+  final _inputFocus = FocusNode();
+
   // Typewriter reveal. The model emits words in bursts, so the streamed text is
   // buffered in [_streamTarget] and revealed a few characters per frame.
   Timer? _typer;
@@ -170,9 +182,12 @@ class _AskScreenState extends ConsumerState<AskScreen> {
 
   @override
   void dispose() {
+    // Leaving mid-answer must not leave the model generating.
+    _cancel?.cancel();
     _cancelTyper();
     _voice.dispose();
     _input.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -265,6 +280,25 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     final text = raw.trim();
     if (text.isEmpty || _busy) return;
 
+    final repo = ref.read(chatRepositoryProvider);
+
+    // Re-asking an edited question: clear its old turn out of the thread first.
+    final editing = _editingIndex;
+    if (editing != null && _sessionId != null) {
+      // ponytail: rows align with _messages by ordinal, not id. Counting from
+      // the rows self-corrects if an answer never reached the database.
+      final stored = await repo.loadMessages(_sessionId!);
+      await repo.deleteTrailingMessages(_sessionId!, stored.length - editing);
+      // The warm cache still holds the turns just removed.
+      await ref.read(aiServiceProvider).resetConversationCache();
+      if (!mounted) return;
+      setState(() => _messages.removeRange(editing, _messages.length));
+    }
+    _editingIndex = null;
+
+    // This answer's claim on the thread; a stop or a new question takes it.
+    final seq = ++_sendSeq;
+
     setState(() {
       _showSuggestions = false;
       _busy = true;
@@ -273,7 +307,6 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _input.clear();
     _scrollToEnd();
 
-    final repo = ref.read(chatRepositoryProvider);
     _sessionId ??= (await repo.createSession(_titleFor(text))).id;
     await repo.addMessage(_sessionId!, ChatRole.user, text);
 
@@ -288,7 +321,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
           'a cloud model, then I can answer questions about '
           'your records.';
       await repo.addMessage(_sessionId!, ChatRole.assistant, reply);
-      if (!mounted) return;
+      if (!mounted || seq != _sendSeq) return;
       setState(() {
         _busy = false;
         _messages.add(const ChatMessage(role: ChatRole.assistant, text: reply));
@@ -365,6 +398,8 @@ class _AskScreenState extends ConsumerState<AskScreen> {
         : lastSourceId == null
         ? const <String>{}
         : {lastSourceId};
+    final cancel = GenerationCancellation();
+    _cancel = cancel;
     await for (final chunk
         in ref
             .read(aiServiceProvider)
@@ -376,8 +411,10 @@ class _AskScreenState extends ConsumerState<AskScreen> {
               shownSourceIds: shownSourceIds,
               focusDocIds: focusDocIds,
               orderedFocusDocIds: orderedFocusDocIds,
+              cancellation: cancel,
             )) {
-      if (!mounted) return;
+      // Stopped or overtaken: leaving the loop also unsubscribes.
+      if (!mounted || seq != _sendSeq) return;
       finalText = chunk.text;
       source = chunk.source;
       sources = chunk.sources;
@@ -452,7 +489,8 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       await _typerDone?.future;
     }
 
-    if (!mounted) return;
+    if (!mounted || seq != _sendSeq) return;
+    _cancel = null;
     await repo.addMessage(
       sid,
       ChatRole.assistant,
@@ -461,20 +499,70 @@ class _AskScreenState extends ConsumerState<AskScreen> {
           ? encodeSourceRef(sources, sourceTotal)
           : source?.id,
     );
-    if (!mounted) return;
+    if (!mounted || seq != _sendSeq) return;
     setState(() => _busy = false);
   }
 
+  /// Stops the model, freezes the reveal, saves the partial and restores the
+  /// send button. Never waits on the stream: a stopped backend may not end it.
+  Future<void> _stopAnswer() async {
+    if (!_busy) return;
+    // Takes the thread from the running answer.
+    _sendSeq++;
+    _cancel?.cancel();
+    _cancel = null;
+
+    final sid = _sessionId;
+    final target = _streamTarget;
+    _revealed = target.length;
+    final idx = _messages.length - 1;
+    // Stopped before the first token: nothing shown, so nothing saved.
+    final hasAnswer =
+        target.isNotEmpty &&
+        idx >= 0 &&
+        _messages[idx].role == ChatRole.assistant;
+    if (hasAnswer) {
+      setState(
+        () => _messages[idx] = _messages[idx].copyWith(
+          text: target,
+          source: _streamSource,
+          sources: _streamSources,
+          sourceTotal: _streamSourceTotal,
+          thinkingActive: false,
+        ),
+      );
+    }
+    _finishTyper();
+    setState(() => _busy = false);
+
+    if (hasAnswer && sid != null) {
+      await ref
+          .read(chatRepositoryProvider)
+          .addMessage(
+            sid,
+            ChatRole.assistant,
+            target,
+            sourceDocId: _streamSources.isNotEmpty
+                ? encodeSourceRef(_streamSources, _streamSourceTotal)
+                : _streamSource?.id,
+          );
+    }
+  }
+
   void _newChat() {
+    unawaited(_stopAnswer());
     _cancelTyper();
     setState(() {
       _sessionId = null;
       _messages.clear();
       _showSuggestions = true;
+      _editingIndex = null;
     });
+    _input.clear();
   }
 
   Future<void> _loadSession(ChatSession session) async {
+    unawaited(_stopAnswer());
     _cancelTyper();
     final repo = ref.read(chatRepositoryProvider);
     final stored = await repo.loadMessages(session.id);
@@ -486,8 +574,32 @@ class _AskScreenState extends ConsumerState<AskScreen> {
         ..clear()
         ..addAll(stored.map((s) => _restoreMessage(s, docs)));
       _showSuggestions = false;
+      _editingIndex = null;
     });
+    _input.clear();
     _scrollToEnd();
+  }
+
+  /// Loads the last question back into the composer. Backing out costs nothing.
+  void _editLastQuestion(int index) {
+    setState(() => _editingIndex = index);
+    _input.text = _messages[index].text;
+    _input.selection = TextSelection.collapsed(offset: _input.text.length);
+    _inputFocus.requestFocus();
+  }
+
+  void _cancelEditing() {
+    setState(() => _editingIndex = null);
+    _input.clear();
+  }
+
+  /// The last question, the only editable one. Null while an answer streams.
+  int? get _editableIndex {
+    if (_busy) return null;
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      if (_messages[i].role == ChatRole.user) return i;
+    }
+    return null;
   }
 
   void _openHistory() {
@@ -786,10 +898,14 @@ class _AskScreenState extends ConsumerState<AskScreen> {
                         ),
                         onViewSource: widget.onOpenDocument,
                       ),
-                    for (final m in _messages)
+                    for (var i = 0; i < _messages.length; i++)
                       _MessageBubble(
-                        message: m,
+                        message: _messages[i],
                         onViewSource: widget.onOpenDocument,
+                        // Only the last question offers Edit.
+                        onEdit: i == _editableIndex && _editingIndex == null
+                            ? () => _editLastQuestion(i)
+                            : null,
                       ),
                     // Only while waiting for the first token; once the assistant
                     // bubble exists it grows in place instead.
@@ -817,7 +933,12 @@ class _AskScreenState extends ConsumerState<AskScreen> {
               ),
               _InputBar(
                 controller: _input,
+                focusNode: _inputFocus,
                 onSend: () => _send(_input.text),
+                busy: _busy,
+                onStop: _stopAnswer,
+                editing: _editingIndex != null,
+                onCancelEdit: _cancelEditing,
                 onStartVoice: _startVoice,
                 onStopVoice: _stopVoice,
                 onCancelVoice: _cancelVoice,
@@ -838,26 +959,108 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   }
 }
 
+/// What the long-press menu on a message offers.
+enum _MessageAction { copy, edit }
+
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.onViewSource});
+  const _MessageBubble({
+    required this.message,
+    required this.onViewSource,
+    this.onEdit,
+  });
 
   final ChatMessage message;
   final ValueChanged<CuraDocument> onViewSource;
+
+  /// Set only on the message that can be re-asked.
+  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == ChatRole.user;
     final child = isUser ? _userBubble(context) : _assistant(context);
-    return Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child: Align(
-            alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-            child: child,
+    return GestureDetector(
+          // The press position anchors the menu beside its message.
+          onLongPressStart: (details) =>
+              _openMenu(context, details.globalPosition),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Align(
+              alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+              child: child,
+            ),
           ),
         )
         .animate()
         .fadeIn(duration: 300.ms)
         .slideY(begin: 0.1, curve: Curves.easeOutCubic);
+  }
+
+  Future<void> _openMenu(BuildContext context, Offset at) async {
+    if (message.text.trim().isEmpty) return;
+    unawaited(HapticFeedback.selectionClick());
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<_MessageAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        at.dx,
+        at.dy,
+        overlay.size.width - at.dx,
+        overlay.size.height - at.dy,
+      ),
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.hairline),
+      ),
+      items: [
+        _menuItem(_MessageAction.copy, Icons.copy_rounded, 'Copy'),
+        if (onEdit != null)
+          _menuItem(_MessageAction.edit, Icons.edit_outlined, 'Edit message'),
+      ],
+    );
+    switch (action) {
+      case null:
+        return;
+      case _MessageAction.copy:
+        await Clipboard.setData(ClipboardData(text: message.text));
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('Copied'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+      case _MessageAction.edit:
+        onEdit?.call();
+    }
+  }
+
+  PopupMenuItem<_MessageAction> _menuItem(
+    _MessageAction value,
+    IconData icon,
+    String label,
+  ) {
+    return PopupMenuItem<_MessageAction>(
+      value: value,
+      height: 44,
+      child: Row(
+        children: [
+          Icon(icon, size: 19, color: AppColors.ink),
+          const SizedBox(width: 14),
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'PlusJakartaSans',
+              fontSize: 14.5,
+              color: AppColors.ink,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _userBubble(BuildContext context) {
@@ -1539,7 +1742,12 @@ class _Suggestions extends StatelessWidget {
 class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
+    required this.focusNode,
     required this.onSend,
+    required this.busy,
+    required this.onStop,
+    required this.editing,
+    required this.onCancelEdit,
     required this.onStartVoice,
     required this.onStopVoice,
     required this.onCancelVoice,
@@ -1551,7 +1759,16 @@ class _InputBar extends StatelessWidget {
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
   final VoidCallback onSend;
+
+  /// While an answer streams the send button becomes a stop button.
+  final bool busy;
+  final VoidCallback onStop;
+
+  /// True while the last question is being rewritten; shows the chip.
+  final bool editing;
+  final VoidCallback onCancelEdit;
 
   /// Voice controls: start (mic), and while recording, stop (✓) / cancel (✕).
   final VoidCallback onStartVoice;
@@ -1580,20 +1797,56 @@ class _InputBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      // The three faces (compose / listening / transcribing) cross-fade in the
-      // same footprint, so recording visibly takes over the composer.
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 260),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, animation) => FadeTransition(
-          opacity: animation,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.97, end: 1).animate(animation),
-            child: child,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (editing) _editingChip(context),
+          // The three faces (compose / listening / transcribing) cross-fade in
+          // the same footprint, so recording visibly takes over the composer.
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.97, end: 1).animate(animation),
+                child: child,
+              ),
+            ),
+            child: _face(context),
           ),
-        ),
-        child: _face(context),
+        ],
+      ),
+    );
+  }
+
+  /// Says why the composer already has text in it.
+  Widget _editingChip(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, left: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.edit_outlined, size: 14, color: AppColors.secondary),
+          const SizedBox(width: 6),
+          Text(
+            'Editing your last question',
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: AppColors.secondary),
+          ),
+          IconButton(
+            onPressed: onCancelEdit,
+            icon: const Icon(Icons.close, size: 15),
+            color: AppColors.secondary,
+            tooltip: 'Cancel editing',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.only(left: 6),
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 24),
+          ),
+        ],
       ),
     );
   }
@@ -1637,6 +1890,7 @@ class _InputBar extends StatelessWidget {
                 Expanded(
                   child: TextField(
                     controller: controller,
+                    focusNode: focusNode,
                     style: textTheme.bodyMedium,
                     textInputAction: TextInputAction.send,
                     onSubmitted: (_) => onSend(),
@@ -1661,17 +1915,29 @@ class _InputBar extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        // Circular send button.
-        Material(
-          color: AppColors.accent,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: onSend,
-            child: const SizedBox(
-              width: 48,
-              height: 48,
-              child: Icon(Icons.arrow_upward, color: AppColors.canvas),
+        // Circular send button, a stop button while an answer streams.
+        Semantics(
+          button: true,
+          label: busy ? 'Stop' : 'Send',
+          child: Material(
+            color: AppColors.accent,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: busy ? onStop : onSend,
+              child: SizedBox(
+                width: 48,
+                height: 48,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  child: Icon(
+                    busy ? Icons.stop_rounded : Icons.arrow_upward,
+                    key: ValueKey(busy),
+                    color: AppColors.canvas,
+                    size: busy ? 26 : 24,
+                  ),
+                ),
+              ),
             ),
           ),
         ),

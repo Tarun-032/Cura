@@ -10,6 +10,16 @@ class ChatRepository {
 
   final AppDatabase _db;
 
+  /// Last id handed out. `createdAt` has second resolution, so the id is what
+  /// orders (and keeps apart) two messages written in the same second.
+  int _lastStamp = 0;
+
+  String _nextMessageId() {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    _lastStamp = now > _lastStamp ? now : _lastStamp + 1;
+    return 'msg-$_lastStamp';
+  }
+
   /// Live list of saved sessions, most recently updated first.
   Stream<List<ChatSession>> watchSessions() {
     final query = _db.select(_db.chatSessions)
@@ -48,7 +58,10 @@ class ChatRepository {
   Future<List<StoredMessage>> loadMessages(String sessionId) async {
     final query = _db.select(_db.chatMessages)
       ..where((m) => m.sessionId.equals(sessionId))
-      ..orderBy([(m) => OrderingTerm.asc(m.createdAt)]);
+      ..orderBy([
+        (m) => OrderingTerm.asc(m.createdAt),
+        (m) => OrderingTerm.asc(m.id),
+      ]);
     final rows = await query.get();
     return rows.map(_toMessage).toList();
   }
@@ -62,7 +75,7 @@ class ChatRepository {
   }) async {
     final now = DateTime.now();
     await _db.into(_db.chatMessages).insert(ChatMessagesCompanion(
-          id: Value('msg-${now.microsecondsSinceEpoch}'),
+          id: Value(_nextMessageId()),
           sessionId: Value(sessionId),
           role: Value(role.name),
           content: Value(text),
@@ -72,6 +85,21 @@ class ChatRepository {
     await (_db.update(_db.chatSessions)
           ..where((s) => s.id.equals(sessionId)))
         .write(ChatSessionsCompanion(updatedAt: Value(now)));
+  }
+
+  /// Removes the newest [count] messages, for a question being re-asked.
+  Future<void> deleteTrailingMessages(String sessionId, int count) async {
+    if (count <= 0) return;
+    final doomed = _db.select(_db.chatMessages)
+      ..where((m) => m.sessionId.equals(sessionId))
+      ..orderBy([
+        (m) => OrderingTerm.desc(m.createdAt),
+        (m) => OrderingTerm.desc(m.id),
+      ])
+      ..limit(count);
+    final ids = [for (final row in await doomed.get()) row.id];
+    if (ids.isEmpty) return;
+    await (_db.delete(_db.chatMessages)..where((m) => m.id.isIn(ids))).go();
   }
 
   /// Deletes a session and all its messages.
