@@ -33,7 +33,9 @@ medical history to anyone.
 - Reads a document with the camera or imports a PDF you already have.
 - Pulls out the title, type, date and results table automatically.
 - Files it into a searchable library and a chronological timeline.
-- Answers questions about your records, citing the reports the answer came from.
+- Rewrites a scraped report summary into plain prose in the background, after saving.
+- Answers questions about your records, citing the reports the answer came from. Stop
+  an answer mid-sentence, or long press your last question to copy or re-ask it.
 - Exports any record, or your whole library, back out as a PDF.
 
 **What it is for**
@@ -194,6 +196,15 @@ and definitions.
 or bill, it may suggest a **title** and a **purpose note**. Nothing else. Lab values,
 prescriptions, dates and amounts stay fully deterministic.
 
+**After saving**, it does one more thing. An imaging, discharge, visit or prescription
+summary is scraped straight off the page, section by section, so it is accurate but
+reads like a dump. Once you save the record, the model rewrites it into plain prose in
+the background. Open the document before it finishes and you see the original with a
+"Rewriting" note beside it. The scraped text is never overwritten: it is what Ask
+searches and quotes, and the rewrite is display only, so a rewrite that drops a detail
+costs you nothing. Any number in the rewrite that is not on the original page is thrown
+away.
+
 **Tradeoffs, honestly.** Answers are slower than cloud and the speed depends entirely
 on your phone. It works best on devices with 6 GB or more of RAM. The model is
 compiled for ARM64, so it does not run on an x86 emulator.
@@ -246,9 +257,12 @@ numbers.
 | Receipt or bill | title, purpose note |
 | Lab, imaging, discharge summary | type, date, title |
 | Lab report only | the results table, **and only** when the OCR geometry was ambiguous and can be reconciled |
+| Imaging, discharge, visit, prescription | after saving, the summary is rewritten for readability, from the scraped clinical sections only |
 
-Everything else stays deterministic: lab values, prescription contents, bill amounts,
-and the narrative summary.
+Everything else stays deterministic: lab values, prescription contents, and bill
+amounts. The narrative summary is deterministic where it counts: the scraped text is
+stored verbatim and is what Ask searches and quotes. Only the copy you read on the
+document page is rewritten.
 
 Even in the rare table repair case, the answer is not trusted blindly. Every value
 that comes back is re-checked against the original OCR text before it is stored, so a
@@ -267,6 +281,9 @@ Before any request leaves the phone, Cura minimizes it:
 2. **A second pass scrubs whatever survived**, by keyword and by structure.
 3. **Questions in Ask** are sent with structured fields only, meaning the title,
    results and note. The raw OCR text of the page is never sent.
+4. **A summary rewrite** sends the scraped clinical sections and nothing else. No
+   question you typed, no chat history, no page text. If the filter strips it to
+   nothing, the request is abandoned rather than widened.
 
 On-device is never redacted, because nothing leaves the phone, and your stored
 documents always keep their full text.
