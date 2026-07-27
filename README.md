@@ -60,7 +60,6 @@ Download the APK from the [Releases](../../releases) page.
 | | |
 |---|---|
 | Android version | 8.0 (Oreo) or newer |
-| Processor | 64-bit ARM (`arm64-v8a`), which is effectively every phone since 2016 |
 | Download | 58 MB |
 | Free space | about 2 GB, since the AI model is fetched separately on first run |
 
@@ -75,36 +74,27 @@ from outside it. That prompt is normal for any APK.
 Setup then walks you through choosing where the AI runs, optional voice input, and an
 optional app lock. Every step can be skipped.
 
-> If you are on a 32-bit-only phone the install will simply be refused. Cura's on-device
-> AI is built for 64-bit ARM, and a 32-bit build would install but never be able to load
-> the model, so it is not shipped rather than shipped broken.
+<details>
+<summary><b>Optional: check the download is genuine</b></summary>
 
-### Verify your download
+<br>
 
-Every APK on the releases page is signed with the same key, so you can confirm a download
-is genuine and unmodified. The signing certificate fingerprint is constant across all
-releases:
-
-```
-SHA-256  a7:de:64:b0:a4:45:44:f4:a3:16:5f:80:58:17:16:83:8d:b6:2c:d3:f9:d4:70:e9:bb:48:75:44:26:6c:97:53
-```
-
-Check it with `apksigner`, which ships in the Android SDK build tools:
+Every release is signed with the same key, so you can confirm a file really came from
+here and was not modified. Run this on the downloaded APK:
 
 ```bash
 apksigner verify --print-certs Cura.apk
 ```
 
-The certificate SHA-256 digest it prints must match the value above. If it does not, the
-APK was signed by someone else, so do not install it. Android enforces this too: a build
-signed with a different key cannot install as an update over a genuine one.
+The SHA-256 it prints must be:
 
-You can also match the per-release checksum listed on the release page:
-
-```bash
-sha256sum Cura.apk                                   # Linux, macOS
-Get-FileHash -Algorithm SHA256 Cura.apk              # Windows PowerShell
 ```
+a7:de:64:b0:a4:45:44:f4:a3:16:5f:80:58:17:16:83:8d:b6:2c:d3:f9:d4:70:e9:bb:48:75:44:26:6c:97:53
+```
+
+If it does not match, the file was signed by someone else. Do not install it.
+
+</details>
 
 ---
 
@@ -205,9 +195,8 @@ searches and quotes, and the rewrite is display only, so a rewrite that drops a 
 costs you nothing. Any number in the rewrite that is not on the original page is thrown
 away.
 
-**Tradeoffs, honestly.** Answers are slower than cloud and the speed depends entirely
-on your phone. It works best on devices with 6 GB or more of RAM. The model is
-compiled for ARM64, so it does not run on an x86 emulator.
+**Tradeoffs, honestly.** Answers are slower than cloud, and the speed depends entirely
+on your phone. It works best on devices with 6 GB or more of RAM.
 
 **Network use.** The one-time model download, and nothing else. Your documents never
 leave the device.
@@ -288,10 +277,6 @@ Before any request leaves the phone, Cura minimizes it:
 On-device is never redacted, because nothing leaves the phone, and your stored
 documents always keep their full text.
 
-The relevant code is in
-[`lib/features/ai/remote/pii_redactor.dart`](lib/features/ai/remote/pii_redactor.dart)
-if you would like to verify this rather than take our word for it.
-
 ---
 
 ## Voice input (optional)
@@ -335,49 +320,74 @@ you out of your own records.
 | PDF | `pdf`, pure Dart and fully offline |
 | Font | Plus Jakarta Sans, bundled locally so there is no runtime font fetch |
 
-## Building
+## Build it yourself
 
-Requirements: the Flutter SDK, the Android SDK, and JDK 17.
+You need the [Flutter SDK](https://docs.flutter.dev/get-started/install), the Android
+SDK, and JDK 17. `flutter doctor` tells you if anything is missing.
 
 ```bash
+git clone https://github.com/Tarun-032/Cura.git
+cd Cura
 flutter pub get
-flutter analyze              # static analysis
-flutter test                 # unit and widget tests
-flutter run                  # debug build on a connected device
-flutter build apk --release
+flutter run                  # debug build on a connected phone
 ```
 
-The on-device language model is compiled for **ARM64 only**, so it will not run on an
-x86 emulator. Test AI features on a physical device. `minSdk` is 26 for the same reason.
+That is the whole setup. There is no API key to configure, no `.env` file, no backend to
+run. A cloud key, if you want one, is entered in the app at runtime and never touches
+the repository.
 
-Release APKs are **arm64 only**. Because llama.cpp publishes no 32-bit ARM or x86 build,
-those variants would install and then fail to load the model, so they are excluded by the
-`androidComponents` block in `android/app/build.gradle.kts`. That also drops roughly
-100 MB of ffmpeg, ML Kit and whisper libraries no phone would ever load, taking the APK
-from 166 MB to 58 MB. The exclusion is scoped to the release variant, so debug builds keep
-every ABI and the x86 emulator still works.
+Other useful commands:
 
-Release builds are signed with a private key that is not in this repository. If you build
-from source without it, Gradle falls back to your local debug key automatically, so
-`flutter build apk --release` works from a fresh clone with no extra setup. Your build
-will simply carry your own signature rather than the official one.
+```bash
+flutter analyze              # static analysis
+flutter test                 # unit and widget tests
+flutter build apk --release  # the installable APK
+```
 
-### Project layout
+**Use a real phone, not an emulator.** The AI model is compiled for ARM64, so it will
+not load on an x86 emulator. Everything else works there, but nothing AI-related will.
+
+**Signing.** Release builds here are signed with a private key that is not in this
+repository. Building from source without it just works: Gradle falls back to your own
+debug key automatically, so `flutter build apk --release` needs no extra setup from a
+fresh clone. Your build simply carries your signature instead of the official one.
+
+**Code generation.** The database layer is generated. If you change a table in
+`lib/core/data/app_database.dart`, regenerate it:
+
+```bash
+dart run build_runner build
+```
+
+## How the project is organised
+
+Everything lives under `lib/`, split by feature rather than by layer, so one folder
+holds the screen, its state and its logic together.
 
 ```
 lib/
-  app/theme/            Material 3 theme and color tokens
-  core/                 Drift schema, repositories, shared widgets
+  app/theme/       colours, typography, the Material 3 theme
+  core/data/       the SQLite schema and the repositories that read it
+  core/widgets/    small widgets shared across features
   features/
-    onboarding/         first run: engine choice, voice, app lock
-    scan/               camera, OCR, deterministic parsers
-    library/ timeline/  browsing and search
-    ask/                chat UI and history
-    ai/                 query router, retrieval, local LLM, remote/ cloud engine
-    export/ pdf_import/
-    security/           biometric app lock
-    settings/
+    onboarding/    first run: engine choice, voice, app lock
+    scan/          camera, OCR, and the rule-based parsers that read a page
+    library/       the records list, search, and a single document's page
+    timeline/      the same records in date order
+    ask/           the chat screen and its saved conversations
+    ai/            answering questions: retrieval, the local model, and
+                   remote/ for the optional cloud engine and its PII filters
+    export/        writing records back out as PDF
+    pdf_import/    reading a PDF you already have
+    security/      the biometric app lock
+    settings/      storage, models, engine, and data controls
+test/              unit and widget tests, one file per area
 ```
+
+Two folders carry most of the weight. **`scan/`** is where a photo becomes a record, and
+it is deliberately free of AI: OCR reads the text, and rules and table geometry do the
+rest. **`ai/remote/`** is the boundary the cloud engine has to cross, and it is where
+every piece of personal information is stripped before a request can leave the phone.
 
 ## Acknowledgements
 
