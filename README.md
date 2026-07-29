@@ -12,7 +12,7 @@ records in plain language.
 
 No account. No server. No telemetry. By default, nothing leaves your phone.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Android-3ddc84)
 ![Flutter](https://img.shields.io/badge/Built%20with-Flutter-02569B)
 
@@ -406,8 +406,8 @@ every piece of personal information is stripped before a request can leave the p
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The bundled font is licensed separately under the SIL
-OFL 1.1.
+Apache 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The bundled font is licensed
+separately under the SIL OFL 1.1.
 
 ## Disclaimer
 
