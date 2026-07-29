@@ -25,7 +25,7 @@ Future<bool> warnIfAnotherModelIsDownloading(
       title: const Text('One model at a time'),
       content: Text(
         '${running.name} is still downloading. Wait for it to finish, or '
-        'cancel it from the notification, then download '
+        'cancel it from its progress bar, then download '
         '${wanted.displayName}.',
       ),
       actions: [

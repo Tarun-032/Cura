@@ -12,6 +12,7 @@ import '../../core/widgets/cura_spark.dart';
 import '../ai/ai_models.dart';
 import '../ai/ai_providers.dart';
 import '../ai/ai_service.dart';
+import '../ai/model_download.dart';
 import '../ai/query_router.dart';
 import '../ai/remote/remote_ai_store.dart';
 import '../ai/retrieval.dart';
@@ -2381,6 +2382,8 @@ class _ModelSwitcherSheetState extends ConsumerState<_ModelSwitcherSheet> {
                   downloading: downloadingModel?.id == model.id
                       ? download!.percent
                       : null,
+                  onCancel: () =>
+                      ref.read(modelDownloaderProvider).cancel(kLlmDownload),
                   onUse: () => _use(model),
                   onDownload: () => _download(model),
                 ),
@@ -2403,6 +2406,7 @@ class _SwitcherRow extends StatelessWidget {
     required this.installed,
     required this.active,
     required this.downloading,
+    required this.onCancel,
     required this.onUse,
     required this.onDownload,
   });
@@ -2414,6 +2418,7 @@ class _SwitcherRow extends StatelessWidget {
   /// 0-100 while this model is the one being fetched, else null.
   final int? downloading;
 
+  final VoidCallback onCancel;
   final VoidCallback onUse;
   final VoidCallback onDownload;
 
@@ -2491,8 +2496,17 @@ class _SwitcherRow extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Nothing trailing while downloading; cancel lives on the notification.
-                if (percent == null && !installed)
+                // Cancel here as well as on the notification, since this is
+                // where the user is watching the bar.
+                if (percent != null)
+                  TextButton(
+                    onPressed: onCancel,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.secondary,
+                    ),
+                    child: const Text('Cancel'),
+                  )
+                else if (!installed)
                   TextButton(
                     onPressed: onDownload,
                     style: TextButton.styleFrom(

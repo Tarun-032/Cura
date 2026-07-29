@@ -12,6 +12,7 @@ class ModelDownload {
   const ModelDownload({
     required this.name,
     required this.fileName,
+    required this.taskId,
     required this.percent,
     this.paused = false,
     this.error,
@@ -22,6 +23,9 @@ class ModelDownload {
 
   /// How a catalog row matches itself to this download.
   final String fileName;
+
+  /// The enqueued task, so a progress bar can cancel it.
+  final String taskId;
 
   /// 0-100. Stays 0 until the first real tick.
   final int percent;
@@ -73,7 +77,7 @@ class ModelDownloader {
     if (existing != null && existing.running) {
       throw ModelDownloadException(
         '${existing.name} is already downloading. '
-        'Wait for it to finish, or cancel it from the notification.',
+        'Wait for it to finish, or cancel it from its progress bar.',
       );
     }
     await _configure();
@@ -94,6 +98,7 @@ class ModelDownloader {
     _downloads[kind] = ModelDownload(
       name: displayName,
       fileName: fileName,
+      taskId: task.taskId,
       percent: 0,
     );
     _emit();
@@ -104,6 +109,15 @@ class ModelDownloader {
         'Could not start the download. Please try again.',
       );
     }
+  }
+
+  /// Stops the [kind] download and drops its progress. Dropped first so the bar
+  /// that was tapped goes away now, not when the native side gets around to it.
+  Future<void> cancel(String kind) async {
+    final download = _downloads.remove(kind);
+    if (download == null) return;
+    _emit();
+    await FileDownloader().cancelTaskWithId(download.taskId);
   }
 
   /// One-time setup. The `running` notification is what earns the foreground
@@ -144,12 +158,14 @@ class ModelDownloader {
   void _onUpdate(TaskUpdate update) {
     final name = update.task.displayName;
     final fileName = update.task.filename;
+    final taskId = update.task.taskId;
     final kind = update.task.metaData;
     switch (update) {
       case TaskProgressUpdate():
         _downloads[kind] = ModelDownload(
           name: name,
           fileName: fileName,
+          taskId: taskId,
           percent: percentOf(update.progress),
           paused: update.progress == progressPaused,
         );
@@ -164,13 +180,18 @@ class ModelDownloader {
           case TaskStatus.failed:
           case TaskStatus.notFound:
           case TaskStatus.canceled:
-            _downloads[kind] = ModelDownload(
-              name: name,
-              fileName: fileName,
-              percent: 0,
-              error: _message(update.status),
-            );
-            _emit();
+            // Already gone means I dropped it in cancel(), and I don't want to
+            // report the user's own tap back to them as an error.
+            if (_downloads.containsKey(kind)) {
+              _downloads[kind] = ModelDownload(
+                name: name,
+                fileName: fileName,
+                taskId: taskId,
+                percent: 0,
+                error: _message(update.status),
+              );
+              _emit();
+            }
             onFinished?.call(update.task, false);
           case TaskStatus.enqueued:
           case TaskStatus.running:

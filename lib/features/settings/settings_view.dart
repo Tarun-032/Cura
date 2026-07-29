@@ -6,6 +6,7 @@ import '../../app/theme/app_colors.dart';
 import '../../core/widgets/cura_spark.dart';
 import '../ai/ai_models.dart';
 import '../ai/ai_providers.dart';
+import '../ai/model_download.dart';
 import '../ai/remote/provider_selector.dart';
 import '../ai/remote/remote_ai_config.dart';
 import '../ai/remote/remote_ai_store.dart';
@@ -560,6 +561,8 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
                     downloading: downloadingModel?.id == model.id
                         ? download!.percent
                         : null,
+                    onCancel: () =>
+                        ref.read(modelDownloaderProvider).cancel(kLlmDownload),
                     onDownload: () => _download(model),
                     onUse: () => _use(model),
                     onDelete: () => _delete(model),
@@ -750,9 +753,17 @@ class _VoiceModelSectionState extends ConsumerState<_VoiceModelSection> {
                   ],
                 ),
               ),
-              // Nothing trailing while downloading; cancel lives on the notification.
+              // Cancel here as well as on the notification, since this is where
+              // the user is watching the bar.
               if (percent != null)
-                const SizedBox.shrink()
+                TextButton(
+                  onPressed: () =>
+                      ref.read(modelDownloaderProvider).cancel(kVoiceDownload),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.secondary,
+                  ),
+                  child: const Text('Cancel'),
+                )
               else if (ready == false)
                 TextButton(
                   onPressed: _download,
@@ -786,6 +797,7 @@ class _ModelRow extends StatelessWidget {
     required this.installed,
     required this.active,
     required this.downloading,
+    required this.onCancel,
     required this.onDownload,
     required this.onUse,
     required this.onDelete,
@@ -798,6 +810,7 @@ class _ModelRow extends StatelessWidget {
   /// 0-100 while this model is the one being fetched, else null.
   final int? downloading;
 
+  final VoidCallback onCancel;
   final VoidCallback onDownload;
   final VoidCallback onUse;
   final VoidCallback onDelete;
@@ -849,9 +862,14 @@ class _ModelRow extends StatelessWidget {
               ],
             ),
           ),
-          // Nothing trailing while downloading; cancel lives on the notification.
+          // Cancel here as well as on the notification, since this is where the
+          // user is watching the bar.
           if (percent != null)
-            const SizedBox.shrink()
+            TextButton(
+              onPressed: onCancel,
+              style: TextButton.styleFrom(foregroundColor: AppColors.secondary),
+              child: const Text('Cancel'),
+            )
           else if (!installed)
             TextButton(
               onPressed: onDownload,

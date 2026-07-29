@@ -15,6 +15,7 @@ ModelDownload _download({
 }) => ModelDownload(
   name: name,
   fileName: fileName,
+  taskId: 'task-$fileName',
   percent: percent,
   error: error,
 );
@@ -130,6 +131,22 @@ void main() {
     });
   });
 
+  // Cancel drops the entry before asking the native side, so the bar goes away
+  // on tap; the canceled status that follows must not put an error back.
+  group('ModelDownloader.cancel', () {
+    test('is a no-op when that kind is not downloading', () async {
+      final downloader = ModelDownloader();
+      addTearDown(downloader.dispose);
+      final seen = <Map<String, ModelDownload>>[];
+      downloader.progress.listen(seen.add);
+
+      await downloader.cancel(kLlmDownload);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(seen, isEmpty);
+    });
+  });
+
   group('ModelDownload.running', () {
     test('is false once it has failed, so rows stop showing a bar', () {
       expect(_download().running, isTrue);
@@ -194,6 +211,8 @@ void main() {
       expect(find.byType(LinearProgressIndicator), findsNothing);
       expect(find.textContaining('%'), findsNothing);
       expect(find.textContaining('Downloading'), findsNothing);
+      // Points at the Cancel button on the row, which is where I put it.
+      expect(find.textContaining('progress bar'), findsOneWidget);
 
       // It only answers once dismissed, and the answer is what skips the sheet.
       await tester.tap(find.text('Got it'));
