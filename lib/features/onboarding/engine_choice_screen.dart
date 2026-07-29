@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/app_colors.dart';
 import '../../core/widgets/cura_spark.dart';
+import '../ai/ai_providers.dart';
 import '../ai/remote/remote_ai_store.dart';
 import '../ai/widgets/model_download_sheet.dart';
 import 'cloud_setup_screen.dart';
@@ -27,14 +28,17 @@ class _EngineChoiceScreenState extends ConsumerState<EngineChoiceScreen> {
 
   Future<void> _onContinue(AiEngine engine, DeviceProfile profile) async {
     if (engine == AiEngine.local) {
-      // Show the model picker with the device-appropriate model pre-selected,
-      // then continue to the optional voice-input step.
+      // Picker with the device-appropriate model pre-selected.
       final ok = await ModelDownloadSheet.show(
         context,
         null,
         recommendModel(profile).id,
       );
-      if (ok == true && mounted) {
+      if (!mounted) return;
+      // "Continue in background" pops false but leaves a run going; "Not now"
+      // leaves nothing, so only the former moves on.
+      final running = ref.read(llmDownloadProvider) != null;
+      if (ok == true || running) {
         Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const VoiceSetupScreen()));

@@ -2318,6 +2318,9 @@ class _ModelSwitcherSheetState extends ConsumerState<_ModelSwitcherSheet> {
   }
 
   Future<void> _download(AiModel model) async {
+    // Only one at a time, so note it rather than open a dead sheet.
+    if (await warnIfAnotherModelIsDownloading(context, ref, model)) return;
+    if (!mounted) return;
     final ok = await ModelDownloadSheet.show(context, model) ?? false;
     if (!ok || !mounted) return;
     // A fresh download is activated by the manager; release the old warm model
@@ -2338,6 +2341,11 @@ class _ModelSwitcherSheetState extends ConsumerState<_ModelSwitcherSheet> {
     final loading = state == null;
     final active = state?.active;
     final installed = state?.installed ?? const <String>{};
+    // Same source as Settings, so a fetching model reads the same in both.
+    final download = ref.watch(llmDownloadProvider);
+    final downloadingModel = (download?.running ?? false)
+        ? aiModelByFileName(download!.fileName)
+        : null;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
@@ -2370,6 +2378,9 @@ class _ModelSwitcherSheetState extends ConsumerState<_ModelSwitcherSheet> {
                   installed: installed.contains(model.id),
                   // On cloud, no on-device model reads as active.
                   active: !onRemote && active?.id == model.id,
+                  downloading: downloadingModel?.id == model.id
+                      ? download!.percent
+                      : null,
                   onUse: () => _use(model),
                   onDownload: () => _download(model),
                 ),
@@ -2391,6 +2402,7 @@ class _SwitcherRow extends StatelessWidget {
     required this.model,
     required this.installed,
     required this.active,
+    required this.downloading,
     required this.onUse,
     required this.onDownload,
   });
@@ -2398,12 +2410,17 @@ class _SwitcherRow extends StatelessWidget {
   final AiModel model;
   final bool installed;
   final bool active;
+
+  /// 0-100 while this model is the one being fetched, else null.
+  final int? downloading;
+
   final VoidCallback onUse;
   final VoidCallback onDownload;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final percent = downloading;
     // Installed + not active → tap the row to switch. Active or not-installed
     // rows aren't row-tappable (active is a no-op; not-installed uses Download).
     final onTap = installed && !active ? onUse : null;
@@ -2441,20 +2458,41 @@ class _SwitcherRow extends StatelessWidget {
                     children: [
                       Text(model.displayName, style: textTheme.bodyMedium),
                       const SizedBox(height: 2),
-                      Text(
-                        active
-                            ? 'In use · ${model.sizeLabel}'
-                            : installed
-                            ? 'Downloaded · ${model.sizeLabel}'
-                            : model.sizeLabel,
-                        style: textTheme.bodySmall?.copyWith(
-                          color: active ? AppColors.accent : AppColors.faint,
+                      if (percent != null) ...[
+                        const SizedBox(height: 4),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(999),
+                          child: LinearProgressIndicator(
+                            // Indeterminate until the first real tick.
+                            value: percent > 0 ? percent / 100 : null,
+                            minHeight: 4,
+                            backgroundColor: AppColors.hairline,
+                            color: AppColors.accent,
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 6),
+                        Text(
+                          percent > 0 ? 'Downloading… $percent%' : 'Starting…',
+                          style: textTheme.bodySmall?.copyWith(
+                            color: AppColors.accent,
+                          ),
+                        ),
+                      ] else
+                        Text(
+                          active
+                              ? 'In use · ${model.sizeLabel}'
+                              : installed
+                              ? 'Downloaded · ${model.sizeLabel}'
+                              : model.sizeLabel,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: active ? AppColors.accent : AppColors.faint,
+                          ),
+                        ),
                     ],
                   ),
                 ),
-                if (!installed)
+                // Nothing trailing while downloading; cancel lives on the notification.
+                if (percent == null && !installed)
                   TextButton(
                     onPressed: onDownload,
                     style: TextButton.styleFrom(

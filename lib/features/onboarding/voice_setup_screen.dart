@@ -22,8 +22,9 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
   final VoiceInputController _voice = VoiceInputController();
 
   bool _ready = false; // model already on disk (e.g. from a prior run)
-  bool _downloading = false;
-  int _progress = 0;
+
+  /// Set on tap so the screen shows progress before the native side reports.
+  bool _starting = false;
   String? _error;
 
   @override
@@ -54,23 +55,19 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
       return;
     }
     setState(() {
-      _downloading = true;
+      _starting = true;
       _error = null;
-      _progress = 0;
     });
     try {
-      await _voice.downloadModel(
-        onProgress: (p) {
-          if (mounted) setState(() => _progress = p);
-        },
+      // Returns on accept; the listener in build moves on once it lands.
+      final started = await _voice.downloadModel(
+        ref.read(modelDownloaderProvider),
       );
-      // Keep the reactive readiness flag in sync for the rest of the app.
-      ref.invalidate(voiceModelReadyProvider);
-      await _finish();
+      if (!started) await _finish();
     } catch (e) {
       if (mounted) {
         setState(() {
-          _downloading = false;
+          _starting = false;
           _error = e.toString();
         });
       }
@@ -80,6 +77,22 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    // Voice only: the LLM from the previous step may still be running here.
+    final download = ref.watch(voiceDownloadProvider);
+    ref.listen(voiceDownloadProvider, (previous, next) {
+      if (!mounted) return;
+      // Gone means done; a failure reports through ModelDownload.error.
+      if (previous != null && next == null) {
+        _finish();
+      } else if (next?.error != null && _starting) {
+        setState(() => _starting = false);
+      }
+    });
+    // Ignore the previous attempt's error mid-retry, or Retry shows it back.
+    final error = _starting ? null : (download?.error ?? _error);
+    final downloading =
+        _starting || (download != null && download.error == null);
+    final progress = download?.percent ?? 0;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark.copyWith(
@@ -117,20 +130,20 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
                 ),
                 _WhisperCard(ready: _ready),
                 const SizedBox(height: 16),
-                if (_error != null) ...[
+                if (error != null) ...[
                   Text(
-                    _error!,
+                    error,
                     style: textTheme.bodySmall?.copyWith(
                       color: AppColors.destructive,
                     ),
                   ),
                   const SizedBox(height: 12),
                 ],
-                if (_downloading) ...[
+                if (downloading) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(999),
                     child: LinearProgressIndicator(
-                      value: _progress > 0 ? _progress / 100 : null,
+                      value: progress > 0 ? progress / 100 : null,
                       minHeight: 8,
                       backgroundColor: AppColors.hairline,
                       color: AppColors.accent,
@@ -138,11 +151,23 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    _progress > 0 ? 'Downloading… $_progress%' : 'Starting…',
+                    switch (download) {
+                      final d? when d.paused => 'Paused, waiting to reconnect…',
+                      final d? when d.percent > 0 =>
+                        'Downloading… ${d.percent}%',
+                      _ => 'Starting…',
+                    },
                     textAlign: TextAlign.center,
                     style: textTheme.bodySmall,
                   ),
-                  const SizedBox(height: 12),
+                  // Same escape as the idle branch, reachable mid-download.
+                  TextButton(
+                    onPressed: _finish,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.secondary,
+                    ),
+                    child: const Text('Continue'),
+                  ),
                 ] else ...[
                   SizedBox(
                     height: 54,
@@ -151,7 +176,7 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
                       icon: Icon(
                         _ready
                             ? Icons.check
-                            : (_error == null
+                            : (error == null
                                   ? Icons.download_outlined
                                   : Icons.refresh),
                         size: 20,
@@ -159,9 +184,7 @@ class _VoiceSetupScreenState extends ConsumerState<VoiceSetupScreen> {
                       label: Text(
                         _ready
                             ? 'Continue'
-                            : (_error == null
-                                  ? 'Download & continue'
-                                  : 'Retry'),
+                            : (error == null ? 'Download & continue' : 'Retry'),
                       ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.accent,

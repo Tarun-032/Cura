@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/app_colors.dart';
+import '../ai/ai_providers.dart';
 import 'voice_input_controller.dart';
 
 /// One-time prompt to download the on-device Whisper voice model. Mirrors
 /// [ModelDownloadSheet] so setting up voice feels identical to setting up the
 /// on-device LLM. Returns `true` (via pop) once the model is on disk.
-class VoiceModelSheet extends StatefulWidget {
+class VoiceModelSheet extends ConsumerStatefulWidget {
   const VoiceModelSheet({super.key, required this.voice});
 
   final VoiceInputController voice;
@@ -26,31 +28,29 @@ class VoiceModelSheet extends StatefulWidget {
   }
 
   @override
-  State<VoiceModelSheet> createState() => _VoiceModelSheetState();
+  ConsumerState<VoiceModelSheet> createState() => _VoiceModelSheetState();
 }
 
-class _VoiceModelSheetState extends State<VoiceModelSheet> {
-  bool _downloading = false;
-  int _progress = 0;
+class _VoiceModelSheetState extends ConsumerState<VoiceModelSheet> {
+  /// Set on tap so the sheet shows progress before the native side reports.
+  bool _starting = false;
   String? _error;
 
   Future<void> _start() async {
     setState(() {
-      _downloading = true;
+      _starting = true;
       _error = null;
-      _progress = 0;
     });
     try {
-      await widget.voice.downloadModel(
-        onProgress: (p) {
-          if (mounted) setState(() => _progress = p);
-        },
+      final started = await widget.voice.downloadModel(
+        ref.read(modelDownloaderProvider),
       );
-      if (mounted) Navigator.of(context).pop(true);
+      // Already on disk, so there is no transfer to watch.
+      if (!started && mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {
-          _downloading = false;
+          _starting = false;
           _error = e.toString();
         });
       }
@@ -60,6 +60,22 @@ class _VoiceModelSheetState extends State<VoiceModelSheet> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    // From the provider, not local state, so reopening picks up where it is.
+    final download = ref.watch(voiceDownloadProvider);
+    ref.listen(voiceDownloadProvider, (previous, next) {
+      if (!mounted) return;
+      // Gone means done; a failure reports through ModelDownload.error.
+      if (previous != null && next == null) {
+        Navigator.of(context).pop(true);
+      } else if (next?.error != null && _starting) {
+        setState(() => _starting = false);
+      }
+    });
+    // Ignore the previous attempt's error mid-retry, or Retry shows it back.
+    final error = _starting ? null : (download?.error ?? _error);
+    final downloading =
+        _starting || (download != null && download.error == null);
+    final progress = download?.percent ?? 0;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
@@ -84,25 +100,42 @@ class _VoiceModelSheetState extends State<VoiceModelSheet> {
               ),
             ),
             const SizedBox(height: 20),
-            if (_downloading) ...[
+            if (downloading) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
-                  value: _progress > 0 ? _progress / 100 : null,
+                  value: progress > 0 ? progress / 100 : null,
                   minHeight: 8,
                   backgroundColor: AppColors.hairline,
                   color: AppColors.accent,
                 ),
               ),
               const SizedBox(height: 10),
-              Text(
-                _progress > 0 ? 'Downloading… $_progress%' : 'Starting…',
-                style: textTheme.bodySmall,
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(switch (download) {
+                      final d? when d.paused => 'Paused, waiting to reconnect…',
+                      final d? when d.percent > 0 =>
+                        'Downloading… ${d.percent}%',
+                      _ => 'Starting…',
+                    }, style: textTheme.bodySmall),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.secondary,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: const Text('Continue in background'),
+                  ),
+                ],
               ),
             ] else ...[
-              if (_error != null) ...[
+              if (error != null) ...[
                 Text(
-                  _error!,
+                  error,
                   style: textTheme.bodySmall?.copyWith(
                     color: AppColors.destructive,
                   ),
@@ -131,7 +164,7 @@ class _VoiceModelSheetState extends State<VoiceModelSheet> {
                           ),
                         ),
                         child: Text(
-                          _error == null
+                          error == null
                               ? 'Download (${VoiceInputController.modelSizeLabel})'
                               : 'Retry',
                         ),

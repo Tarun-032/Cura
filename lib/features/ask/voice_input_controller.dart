@@ -1,10 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
+
+import '../ai/model_download.dart';
 
 /// On-device voice input for Ask: records the mic to a 16 kHz mono WAV and
 /// transcribes it with Whisper.cpp on the phone.
@@ -64,100 +65,37 @@ class VoiceInputController {
   /// Whether the Whisper model file is already on disk.
   Future<bool> isModelReady() => isModelDownloaded();
 
-  /// Downloads the Whisper model into the exact path `whisper_ggml` loads from,
-  /// as a streamed GET with 0–100 progress — mirroring [AiModelManager.download]
-  /// so the model-download UX feels identical to the LLM one. No-op if present.
-  Future<void> downloadModel({void Function(int percent)? onProgress}) async {
+  /// Queues the Whisper model into the path `whisper_ggml` loads from. Returns
+  /// once the transfer is accepted, or false if the file was already here.
+  Future<bool> downloadModel(ModelDownloader downloader) async {
     final dest = File(await _modelPath());
-    if (await dest.exists()) return;
+    if (await dest.exists()) return false;
     await dest.parent.create(recursive: true);
-
-    // Hugging Face's CDN 403s transiently on a first hit while it reconstructs
-    // the file, so retry with a short backoff.
-    const maxAttempts = 4;
-    VoiceInputException? lastError;
-    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        await _downloadOnce(dest, onProgress);
-        await _deleteLegacyModel();
-        return;
-      } on VoiceInputException catch (e) {
-        lastError = e;
-        debugPrint('[Cura.voice] download attempt $attempt/$maxAttempts '
-            'failed: $e');
-        if (attempt < maxAttempts) {
-          await Future<void>.delayed(Duration(milliseconds: 700 * attempt));
-        }
-      }
-    }
-    throw lastError ??
-        const VoiceInputException('Download failed. Please try again later.');
-  }
-
-  /// A single download attempt. Streams to a `.part` temp then atomically
-  /// renames on success; cleans up the temp on any failure.
-  Future<void> _downloadOnce(
-    File dest,
-    void Function(int percent)? onProgress,
-  ) async {
-    final temp = File('${dest.path}.part');
-    if (await temp.exists()) await temp.delete();
-
-    final client = http.Client();
     try {
-      final request = http.Request('GET', Uri.parse(_modelUrl))
-        ..headers['User-Agent'] = 'Cura/1.0 (Android)'
-        ..headers['Accept'] = '*/*';
-      final response = await client.send(request);
-      if (response.statusCode != 200) {
-        final body = await response.stream.bytesToString();
-        final snippet =
-            body.substring(0, body.length < 200 ? body.length : 200);
-        throw VoiceInputException(
-          'Server returned ${response.statusCode}: $snippet',
-        );
-      }
-      final total = response.contentLength ?? 0;
-      var received = 0;
-      var lastPct = -1;
-      final sink = temp.openWrite();
-      try {
-        await for (final chunk in response.stream) {
-          sink.add(chunk);
-          received += chunk.length;
-          if (total > 0) {
-            final pct = received * 100 ~/ total;
-            if (pct != lastPct) {
-              lastPct = pct;
-              onProgress?.call(pct);
-            }
-          }
-        }
-      } finally {
-        await sink.close();
-      }
-      await temp.rename(dest.path);
-    } on VoiceInputException {
-      if (await temp.exists()) await temp.delete();
-      rethrow;
-    } catch (e) {
-      if (await temp.exists()) await temp.delete();
-      throw VoiceInputException('Download failed: $e');
-    } finally {
-      client.close();
+      await downloader.start(
+        url: _modelUrl,
+        fileName: _modelFileName,
+        // Root of app support, not the models subdirectory the LLM uses.
+        directory: '',
+        displayName: 'Voice input model',
+        kind: kVoiceDownload,
+      );
+    } on ModelDownloadException catch (e) {
+      throw VoiceInputException(e.message);
     }
+    return true;
   }
 
   /// Removes the downloaded Whisper model from the device (Settings "delete").
   Future<void> deleteModel() async {
     final file = File(await _modelPath());
     if (await file.exists()) await file.delete();
-    await _deleteLegacyModel();
+    await deleteLegacyModel();
   }
 
   /// Deletes the legacy fp16 model file if a previous build left one behind.
   /// Best-effort — never throws.
-  Future<void> _deleteLegacyModel() async {
+  static Future<void> deleteLegacyModel() async {
     try {
       final dir = await getApplicationSupportDirectory();
       final legacy = File('${dir.path}/$_legacyModelFileName');
@@ -186,9 +124,8 @@ class VoiceInputController {
 
   /// Live input level (0–1-ish, derived from dBFS) for the recording waveform.
   /// Polled fairly quickly so the bars visibly react to speech.
-  Stream<double> amplitudeStream() => _recorder
-      .onAmplitudeChanged(const Duration(milliseconds: 120))
-      .map((a) {
+  Stream<double> amplitudeStream() =>
+      _recorder.onAmplitudeChanged(const Duration(milliseconds: 120)).map((a) {
         // Map ~[-45, 0] dBFS onto [0, 1] so the ring reacts to speech.
         const floor = -45.0;
         final norm = ((a.current - floor) / -floor).clamp(0.0, 1.0);
@@ -197,7 +134,9 @@ class VoiceInputController {
 
   /// Stops recording and transcribes on-device. Returns the trimmed text, or
   /// null if nothing usable was captured. Always cleans up the temp audio.
-  Future<String?> stopAndTranscribe({void Function(int percent)? onProgress}) async {
+  Future<String?> stopAndTranscribe({
+    void Function(int percent)? onProgress,
+  }) async {
     _recording = false;
     final recordedPath = await _recorder.stop() ?? _wavPath;
     _wavPath = null;
@@ -224,12 +163,16 @@ class VoiceInputController {
         onProgress: onProgress,
       );
       final text = response.text.trim();
-      debugPrint('[Cura.voice] transcribe ms=${sw.elapsedMilliseconds} '
-          'threads=$_threads chars=${text.length}');
+      debugPrint(
+        '[Cura.voice] transcribe ms=${sw.elapsedMilliseconds} '
+        'threads=$_threads chars=${text.length}',
+      );
       return text.isEmpty ? null : text;
     } catch (e) {
-      debugPrint('[Cura.voice] transcribe failed after '
-          '${sw.elapsedMilliseconds}ms: $e');
+      debugPrint(
+        '[Cura.voice] transcribe failed after '
+        '${sw.elapsedMilliseconds}ms: $e',
+      );
       return null;
     } finally {
       // The recorded WAV plus the converter's `<path>.wav` output.

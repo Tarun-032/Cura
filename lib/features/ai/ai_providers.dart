@@ -1,14 +1,60 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ask/voice_input_controller.dart';
+import '../settings/storage_info.dart';
 import 'ai_model_manager.dart';
 import 'ai_models.dart';
 import 'ai_service.dart';
+import 'model_download.dart';
 import 'remote/remote_ai_store.dart';
 
 /// Handles downloading / checking the on-device model.
 final aiModelManagerProvider = Provider<AiModelManager>((ref) {
   return AiModelManager();
+});
+
+/// Starts and tracks model downloads. Not autoDispose, so it outlives the sheet
+/// that started one and still runs [ModelDownloader.onFinished].
+final modelDownloaderProvider = Provider<ModelDownloader>((ref) {
+  final downloader = ModelDownloader(
+    onFinished: (task, ok) async {
+      if (!ok) return;
+      if (task.metaData == kLlmDownload) {
+        // Activate here, since download() no longer waits for the transfer.
+        final model = aiModelByFileName(task.filename);
+        if (model != null) {
+          await ref.read(aiModelManagerProvider).activate(model);
+        }
+        // Drop the warm model so the next question loads the new one.
+        ref.invalidate(aiServiceProvider);
+        ref.invalidate(aiModelStateProvider);
+        ref.invalidate(activeEngineProvider);
+      } else {
+        await VoiceInputController.deleteLegacyModel();
+        ref.invalidate(voiceModelReadyProvider);
+      }
+      ref.invalidate(storageBreakdownProvider);
+    },
+  );
+  ref.onDispose(downloader.dispose);
+  return downloader;
+});
+
+/// Everything in flight, keyed by kind.
+final modelDownloadsProvider = StreamProvider<Map<String, ModelDownload>>((
+  ref,
+) {
+  return ref.watch(modelDownloaderProvider).progress;
+});
+
+/// The on-device LLM download in flight, or null.
+final llmDownloadProvider = Provider<ModelDownload?>((ref) {
+  return ref.watch(modelDownloadsProvider).value?[kLlmDownload];
+});
+
+/// The voice (Whisper) model download in flight, or null.
+final voiceDownloadProvider = Provider<ModelDownload?>((ref) {
+  return ref.watch(modelDownloadsProvider).value?[kVoiceDownload];
 });
 
 /// Stores the optional cloud-model config + which engine is active.

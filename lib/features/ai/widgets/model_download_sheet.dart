@@ -6,6 +6,39 @@ import '../../../core/widgets/cura_spark.dart';
 import '../ai_models.dart';
 import '../ai_providers.dart';
 
+/// Notes that a different model is mid-download and returns true so the caller
+/// skips the sheet. No progress here: it would read as the model just tapped.
+Future<bool> warnIfAnotherModelIsDownloading(
+  BuildContext context,
+  WidgetRef ref,
+  AiModel wanted,
+) async {
+  final running = ref.read(llmDownloadProvider);
+  if (running == null ||
+      !running.running ||
+      running.fileName == wanted.fileName) {
+    return false;
+  }
+  await showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('One model at a time'),
+      content: Text(
+        '${running.name} is still downloading. Wait for it to finish, or '
+        'cancel it from the notification, then download '
+        '${wanted.displayName}.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Got it'),
+        ),
+      ],
+    ),
+  );
+  return true;
+}
+
 /// Bottom sheet offering to download an on-device model, popping `true` once one
 /// is installed. Pass a [model] to download that one, or none to show the full
 /// catalog as a picker.
@@ -20,9 +53,9 @@ class ModelDownloadSheet extends ConsumerStatefulWidget {
   /// (e.g. the onboarding hardware-scan pick). Ignored when [model] is set.
   final String? recommendedId;
 
-  /// Shows the sheet; resolves to true when a model finishes downloading.
-  /// Omit [model] to let the user pick from the catalog; pass [recommendedId]
-  /// to pre-select and badge a recommended one.
+  /// Resolves true once a model is installed, false on any back-out. False
+  /// covers both "Not now" and "Continue in background", so a caller that needs
+  /// to tell them apart checks `llmDownloadProvider`.
   static Future<bool?> show(
     BuildContext context, [
     AiModel? model,
@@ -46,8 +79,8 @@ class ModelDownloadSheet extends ConsumerStatefulWidget {
 }
 
 class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
-  bool _downloading = false;
-  int _progress = 0;
+  /// Set on tap so the sheet shows progress before the native side reports.
+  bool _starting = false;
   String? _error;
 
   /// The model that will be downloaded. Fixed when [widget.model] is set;
@@ -61,24 +94,19 @@ class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
 
   Future<void> _start() async {
     setState(() {
-      _downloading = true;
+      _starting = true;
       _error = null;
-      _progress = 0;
     });
     try {
-      await ref
+      final started = await ref
           .read(aiModelManagerProvider)
-          .download(
-            _selected,
-            onProgress: (p) {
-              if (mounted) setState(() => _progress = p);
-            },
-          );
-      if (mounted) Navigator.of(context).pop(true);
+          .download(_selected, ref.read(modelDownloaderProvider));
+      // Already on disk, so there is no transfer to watch.
+      if (!started && mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {
-          _downloading = false;
+          _starting = false;
           _error = e.toString();
         });
       }
@@ -88,6 +116,23 @@ class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    // From the provider, not local state, so reopening picks up where it is.
+    final download = ref.watch(llmDownloadProvider);
+    ref.listen(llmDownloadProvider, (previous, next) {
+      if (!mounted) return;
+      // Gone means done, but only claim it for our own model.
+      if (previous != null &&
+          next == null &&
+          previous.fileName == _selected.fileName) {
+        Navigator.of(context).pop(true);
+      } else if (next?.error != null && _starting) {
+        setState(() => _starting = false);
+      }
+    });
+    // Ignore the previous attempt's error mid-retry, or Retry shows it back.
+    final error = _starting ? null : (download?.error ?? _error);
+    final downloading = _starting || (download != null && download.running);
+    final progress = download?.percent ?? 0;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
@@ -115,22 +160,39 @@ class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
               ),
             ),
             const SizedBox(height: 20),
-            if (_downloading) ...[
+            if (downloading) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
-                  value: _progress > 0 ? _progress / 100 : null,
+                  value: progress > 0 ? progress / 100 : null,
                   minHeight: 8,
                   backgroundColor: AppColors.hairline,
                   color: AppColors.accent,
                 ),
               ),
               const SizedBox(height: 10),
-              Text(
-                _progress > 0
-                    ? 'Downloading ${_selected.displayName}… $_progress%'
-                    : 'Starting…',
-                style: textTheme.bodySmall,
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(switch (download) {
+                      null => 'Starting…',
+                      final d when d.paused => 'Paused, waiting to reconnect…',
+                      // Name from the download, never from _selected.
+                      final d when d.percent > 0 =>
+                        'Downloading ${d.name}… ${d.percent}%',
+                      _ => 'Starting…',
+                    }, style: textTheme.bodySmall),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.secondary,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: const Text('Continue in background'),
+                  ),
+                ],
               ),
             ] else ...[
               // Catalog picker — only when no specific model was requested.
@@ -144,9 +206,9 @@ class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
                   ),
                 const SizedBox(height: 12),
               ],
-              if (_error != null) ...[
+              if (error != null) ...[
                 Text(
-                  _error!,
+                  error,
                   style: textTheme.bodySmall?.copyWith(
                     color: AppColors.destructive,
                   ),
@@ -175,7 +237,7 @@ class _ModelDownloadSheetState extends ConsumerState<ModelDownloadSheet> {
                           ),
                         ),
                         child: Text(
-                          _error == null
+                          error == null
                               ? 'Download (${_selected.sizeLabel})'
                               : 'Retry',
                         ),

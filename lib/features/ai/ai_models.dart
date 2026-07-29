@@ -104,3 +104,11 @@ AiModel? aiModelById(String? id) {
   }
   return null;
 }
+
+/// Looks up a catalog entry by file name, since the downloader knows files.
+AiModel? aiModelByFileName(String? fileName) {
+  for (final m in kAiModelCatalog) {
+    if (m.fileName == fileName) return m;
+  }
+  return null;
+}

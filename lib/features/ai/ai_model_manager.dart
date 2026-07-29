@@ -1,15 +1,17 @@
 import 'dart:io';
 
-import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ai_models.dart';
+import 'model_download.dart';
 
-/// Manages the on-device model file: a streamed HTTP GET into app-private
-/// storage, which llama.cpp then loads directly. There is no install step, so
-/// "the file exists on disk" is the source of truth for what is installed.
+/// Subdirectory of application support the model files live in.
+const kModelsDirectory = 'models';
+
+/// Manages the on-device model file, which llama.cpp loads directly. No install
+/// step, so "the file exists on disk" is the source of truth.
 class AiModelManager {
   static const _activeKey = 'cura_active_ai_model';
   static const _thinkKey = 'cura_think_harder';
@@ -56,94 +58,27 @@ class AiModelManager {
     if (!await file.exists()) {
       throw const ModelDownloadException('Model is not downloaded yet.');
     }
-    await _remember(model);
-  }
-
-  /// Downloads [model] to private storage and marks it active. [onProgress]
-  /// receives 0–100; throws [ModelDownloadException] on failure. Retries with a
-  /// short backoff, since Hugging Face's CDN 403s transiently on a first hit.
-  Future<void> download(AiModel model, {void Function(int)? onProgress}) async {
-    final dest = await _modelFile(model);
-    if (await dest.exists()) {
-      await _remember(model);
-      return;
-    }
-    await dest.parent.create(recursive: true);
-
-    const maxAttempts = 4;
-    ModelDownloadException? lastError;
-    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        await _downloadOnce(model, dest, onProgress);
-        await _remember(model);
-        return;
-      } on ModelDownloadException catch (e) {
-        lastError = e;
-        if (attempt < maxAttempts) {
-          await Future<void>.delayed(Duration(milliseconds: 700 * attempt));
-        }
-      }
-    }
-    throw lastError ??
-        const ModelDownloadException('Download failed. Please try again later.');
-  }
-
-  /// A single download attempt: streamed GET into a `.part` temp, atomically
-  /// renamed on success and cleaned up on any failure.
-  Future<void> _downloadOnce(
-    AiModel model,
-    File dest,
-    void Function(int)? onProgress,
-  ) async {
-    final temp = File('${dest.path}.part');
-    if (await temp.exists()) await temp.delete();
-
-    final client = http.Client();
-    try {
-      final request = http.Request('GET', Uri.parse(model.url))
-        ..headers['User-Agent'] = 'Cura/1.0 (Android)'
-        ..headers['Accept'] = '*/*';
-      final response = await client.send(request);
-      if (response.statusCode != 200) {
-        throw ModelDownloadException(
-          'Server returned ${response.statusCode}. Please try again later.',
-        );
-      }
-      final total = response.contentLength ?? 0;
-      var received = 0;
-      var lastPct = -1;
-      final sink = temp.openWrite();
-      try {
-        await for (final chunk in response.stream) {
-          sink.add(chunk);
-          received += chunk.length;
-          if (total > 0) {
-            final pct = (received * 100 ~/ total);
-            if (pct != lastPct) {
-              lastPct = pct;
-              onProgress?.call(pct);
-            }
-          }
-        }
-      } finally {
-        await sink.close();
-      }
-      await temp.rename(dest.path);
-    } on ModelDownloadException {
-      if (await temp.exists()) await temp.delete();
-      rethrow;
-    } catch (e) {
-      if (await temp.exists()) await temp.delete();
-      throw ModelDownloadException('Download failed: $e');
-    } finally {
-      client.close();
-    }
-  }
-
-  /// Persists [model] as the active selection.
-  Future<void> _remember(AiModel model) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_activeKey, model.id);
+  }
+
+  /// Queues [model]. Returns once the transfer is accepted, not finished, or
+  /// false if the file was already here so nothing started.
+  Future<bool> download(AiModel model, ModelDownloader downloader) async {
+    final dest = await _modelFile(model);
+    if (await dest.exists()) {
+      await activate(model);
+      return false;
+    }
+    await dest.parent.create(recursive: true);
+    await downloader.start(
+      url: model.url,
+      fileName: model.fileName,
+      directory: kModelsDirectory,
+      displayName: model.displayName,
+      kind: kLlmDownload,
+    );
+    return true;
   }
 
   /// Removes the downloaded model from the device.
@@ -157,7 +92,7 @@ class AiModelManager {
   /// model dropped from the catalog, or leftover .part temp files) go too.
   Future<void> deleteAll() async {
     final dir = await getApplicationSupportDirectory();
-    final modelsDir = Directory(p.join(dir.path, 'models'));
+    final modelsDir = Directory(p.join(dir.path, kModelsDirectory));
     if (await modelsDir.exists()) {
       await modelsDir.delete(recursive: true);
     }
@@ -167,14 +102,6 @@ class AiModelManager {
 
   Future<File> _modelFile(AiModel model) async {
     final dir = await getApplicationSupportDirectory();
-    return File(p.join(dir.path, 'models', model.fileName));
+    return File(p.join(dir.path, kModelsDirectory, model.fileName));
   }
-}
-
-/// Readable download failure surfaced to the UI.
-class ModelDownloadException implements Exception {
-  const ModelDownloadException(this.message);
-  final String message;
-  @override
-  String toString() => message;
 }

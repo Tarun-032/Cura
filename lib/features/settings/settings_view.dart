@@ -307,7 +307,9 @@ class _SecuritySectionState extends State<_SecuritySection> {
       if (wantOn) {
         if (!await _auth.canAuthenticate()) {
           if (mounted) {
-            _toast('Set up a fingerprint or screen lock in your phone settings first');
+            _toast(
+              'Set up a fingerprint or screen lock in your phone settings first',
+            );
           }
           return;
         }
@@ -365,6 +367,9 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
   }
 
   Future<void> _download(AiModel model) async {
+    // Only one at a time, so note it rather than open a dead sheet.
+    if (await warnIfAnotherModelIsDownloading(context, ref, model)) return;
+    if (!mounted) return;
     final ok = await ModelDownloadSheet.show(context, model) ?? false;
     if (ok) {
       ref.invalidate(aiServiceProvider);
@@ -456,6 +461,11 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
     // (tapping it makes it the main model and turns cloud off).
     final onCloud = ref.watch(activeEngineProvider).value?.isRemote ?? false;
     final localActive = onCloud ? null : active;
+    // Watched here, not per row, so the card can say so while collapsed.
+    final download = ref.watch(llmDownloadProvider);
+    final downloadingModel = (download?.running ?? false)
+        ? aiModelByFileName(download!.fileName)
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -502,7 +512,11 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              loading
+                              // First, since collapsed hides the rows' bars.
+                              downloadingModel != null
+                                  ? 'Downloading ${downloadingModel.displayName}'
+                                        '… ${download!.percent}%'
+                                  : loading
                                   ? 'Checking…'
                                   : active != null
                                   ? '${active.displayName} · ${active.sizeLabel}'
@@ -543,6 +557,9 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
                     model: model,
                     installed: installed.contains(model.id),
                     active: localActive?.id == model.id,
+                    downloading: downloadingModel?.id == model.id
+                        ? download!.percent
+                        : null,
                     onDownload: () => _download(model),
                     onUse: () => _use(model),
                     onDelete: () => _delete(model),
@@ -658,6 +675,9 @@ class _VoiceModelSectionState extends ConsumerState<_VoiceModelSection> {
     // up here even though this tab stays mounted in the IndexedStack. null =
     // still checking.
     final ready = ref.watch(voiceModelReadyProvider).value;
+    // Shows here wherever it was started: this row, Ask, or onboarding.
+    final download = ref.watch(voiceDownloadProvider);
+    final percent = (download?.running ?? false) ? download!.percent : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -694,20 +714,46 @@ class _VoiceModelSectionState extends ConsumerState<_VoiceModelSection> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Whisper for Voice Input', style: textTheme.bodyMedium),
-                    const SizedBox(height: 2),
                     Text(
-                      ready == null
-                          ? 'Checking…'
-                          : ready
-                          ? 'Downloaded · ${VoiceInputController.modelSizeLabel}'
-                          : 'Not downloaded yet',
-                      style: textTheme.bodySmall,
+                      'Whisper for Voice Input',
+                      style: textTheme.bodyMedium,
                     ),
+                    const SizedBox(height: 2),
+                    if (percent != null) ...[
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          // Indeterminate until the first real tick.
+                          value: percent > 0 ? percent / 100 : null,
+                          minHeight: 4,
+                          backgroundColor: AppColors.hairline,
+                          color: AppColors.accent,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        percent > 0 ? 'Downloading… $percent%' : 'Starting…',
+                        style: textTheme.bodySmall?.copyWith(
+                          color: AppColors.accent,
+                        ),
+                      ),
+                    ] else
+                      Text(
+                        ready == null
+                            ? 'Checking…'
+                            : ready
+                            ? 'Downloaded · ${VoiceInputController.modelSizeLabel}'
+                            : 'Not downloaded yet',
+                        style: textTheme.bodySmall,
+                      ),
                   ],
                 ),
               ),
-              if (ready == false)
+              // Nothing trailing while downloading; cancel lives on the notification.
+              if (percent != null)
+                const SizedBox.shrink()
+              else if (ready == false)
                 TextButton(
                   onPressed: _download,
                   style: TextButton.styleFrom(
@@ -739,6 +785,7 @@ class _ModelRow extends StatelessWidget {
     required this.model,
     required this.installed,
     required this.active,
+    required this.downloading,
     required this.onDownload,
     required this.onUse,
     required this.onDelete,
@@ -747,6 +794,10 @@ class _ModelRow extends StatelessWidget {
   final AiModel model;
   final bool installed;
   final bool active;
+
+  /// 0-100 while this model is the one being fetched, else null.
+  final int? downloading;
+
   final VoidCallback onDownload;
   final VoidCallback onUse;
   final VoidCallback onDelete;
@@ -754,6 +805,7 @@ class _ModelRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final percent = downloading;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
       child: Row(
@@ -764,20 +816,43 @@ class _ModelRow extends StatelessWidget {
               children: [
                 Text(model.displayName, style: textTheme.bodyMedium),
                 const SizedBox(height: 2),
-                Text(
-                  active
-                      ? 'In use · ${model.sizeLabel}'
-                      : installed
-                      ? 'Downloaded · ${model.sizeLabel}'
-                      : model.sizeLabel,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: active ? AppColors.accent : AppColors.faint,
+                if (percent != null) ...[
+                  const SizedBox(height: 4),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(999),
+                    child: LinearProgressIndicator(
+                      // Indeterminate until the first real tick.
+                      value: percent > 0 ? percent / 100 : null,
+                      minHeight: 4,
+                      backgroundColor: AppColors.hairline,
+                      color: AppColors.accent,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 6),
+                  Text(
+                    percent > 0 ? 'Downloading… $percent%' : 'Starting…',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: AppColors.accent,
+                    ),
+                  ),
+                ] else
+                  Text(
+                    active
+                        ? 'In use · ${model.sizeLabel}'
+                        : installed
+                        ? 'Downloaded · ${model.sizeLabel}'
+                        : model.sizeLabel,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: active ? AppColors.accent : AppColors.faint,
+                    ),
+                  ),
               ],
             ),
           ),
-          if (!installed)
+          // Nothing trailing while downloading; cancel lives on the notification.
+          if (percent != null)
+            const SizedBox.shrink()
+          else if (!installed)
             TextButton(
               onPressed: onDownload,
               style: TextButton.styleFrom(foregroundColor: AppColors.accent),
