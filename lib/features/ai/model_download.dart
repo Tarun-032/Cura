@@ -147,10 +147,12 @@ class ModelDownloader {
       ),
       progressBar: true,
     );
-    // A refusal is not fatal; the download just runs unseen.
+    // Android only ever reports granted or denied, never undetermined, so
+    // asking on undetermined never asked at all. A refusal is not fatal; the
+    // download just runs unseen, and Settings can send them to the system page.
     final permissions = FileDownloader().permissions;
-    if (await permissions.status(PermissionType.notifications) ==
-        PermissionStatus.undetermined) {
+    if (await permissions.status(PermissionType.notifications) !=
+        PermissionStatus.granted) {
       await permissions.request(PermissionType.notifications);
     }
   }

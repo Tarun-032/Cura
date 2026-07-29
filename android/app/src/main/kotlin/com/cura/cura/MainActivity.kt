@@ -2,7 +2,9 @@ package com.cura.cura
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -23,6 +25,15 @@ class MainActivity : FlutterFragmentActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getInfo" -> result.success(deviceInfo())
+                    // The only way back once notifications are permanently
+                    // denied, since the OS stops showing the prompt.
+                    "openNotificationSettings" -> {
+                        startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        )
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }

@@ -1,4 +1,6 @@
+import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -43,11 +45,13 @@ class SettingsView extends ConsumerWidget {
                 Text('Settings', style: textTheme.headlineMedium),
                 const SizedBox(height: 20),
 
-                // Data actions stay together at the top so storage controls are
-                // easy to find without mixing them with privacy information.
+                // App-level settings stay together at the top, ahead of the
+                // model cards. Storage first, then the data lifecycle, with the
+                // destructive action last.
                 SettingsGroup(
-                  label: 'Data control',
+                  label: 'General',
                   rows: [
+                    const _NotificationsRow(),
                     SettingsRow(
                       icon: Icons.donut_small_outlined,
                       iconColor: AppColors.accent,
@@ -153,7 +157,10 @@ class SettingsGroup extends StatelessWidget {
   const SettingsGroup({super.key, required this.label, required this.rows});
 
   final String label;
-  final List<SettingsRow> rows;
+
+  /// Not `List<SettingsRow>`: a row that owns state, like the notification
+  /// permission, is a widget of its own that returns one.
+  final List<Widget> rows;
 
   @override
   Widget build(BuildContext context) {
@@ -347,8 +354,77 @@ class _SecuritySectionState extends State<_SecuritySection> {
   }
 }
 
-/// On-device AI model management: shows the active model, expands to the full
-/// catalog, and lets the user download, switch between, or delete models.
+/// Whether Cura may post notifications
+class _NotificationsRow extends StatefulWidget {
+  const _NotificationsRow();
+
+  @override
+  State<_NotificationsRow> createState() => _NotificationsRowState();
+}
+
+class _NotificationsRowState extends State<_NotificationsRow>
+    with WidgetsBindingObserver {
+  static const _channel = MethodChannel('com.cura.cura/device');
+
+  bool _granted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // The user turns this on in a different app, so re-read it on the way back.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final status = await FileDownloader().permissions.status(
+      PermissionType.notifications,
+    );
+    if (mounted) {
+      setState(() => _granted = status == PermissionStatus.granted);
+    }
+  }
+
+  Future<void> _onTap() async {
+    if (!_granted) {
+      await FileDownloader().permissions.request(PermissionType.notifications);
+      await _refresh();
+      if (_granted) return; // the system prompt did it
+    }
+    // Already on, or refused often enough that Android no longer prompts.
+    await _channel.invokeMethod<void>('openNotificationSettings');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsRow(
+      icon: _granted
+          ? Icons.notifications_active_outlined
+          : Icons.notifications_none,
+      iconColor: _granted ? AppColors.accent : AppColors.secondary,
+      tileColor: _granted ? AppColors.softTint : AppColors.divider,
+      title: 'Notifications',
+      subtitle: _granted
+          ? 'Tap to change'
+          : 'Off, Tap to allow',
+      trailing: const SettingsChevron(),
+      onTap: _onTap,
+    );
+  }
+}
+
+/// On-device AI model management
 class _AiModelSection extends ConsumerStatefulWidget {
   const _AiModelSection();
 
@@ -472,7 +548,7 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'On-device AI model',
+          'On-device Model',
           style: textTheme.bodySmall?.copyWith(color: AppColors.secondary),
         ),
         const SizedBox(height: 8),
