@@ -535,7 +535,6 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
     final installed = state?.installed ?? const <String>{};
     // When cloud is the active engine, no on-device model is "in use" — so we
     // don't flag any as active and every downloaded model offers a "Use" button
-    // (tapping it makes it the main model and turns cloud off).
     final onCloud = ref.watch(activeEngineProvider).value?.isRemote ?? false;
     final localActive = onCloud ? null : active;
     // Watched here, not per row, so the card can say so while collapsed.
@@ -543,6 +542,18 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
     final downloadingModel = (download?.running ?? false)
         ? aiModelByFileName(download!.fileName)
         : null;
+
+    final (String headline, String? detail) = switch ((
+      downloadingModel,
+      loading,
+      active,
+    )) {
+      // First, since collapsed hides the rows' bars.
+      (final m?, _, _) => (m.displayName, 'Downloading… ${download!.percent}%'),
+      (_, true, _) => ('Checking…', null),
+      (_, _, final a?) => (a.displayName, a.sizeLabel),
+      _ => ('No model', 'Not downloaded yet'),
+    };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -583,23 +594,11 @@ class _AiModelSectionState extends ConsumerState<_AiModelSection> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'On-device model',
-                              style: textTheme.bodyMedium,
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              // First, since collapsed hides the rows' bars.
-                              downloadingModel != null
-                                  ? 'Downloading ${downloadingModel.displayName}'
-                                        '… ${download!.percent}%'
-                                  : loading
-                                  ? 'Checking…'
-                                  : active != null
-                                  ? '${active.displayName} · ${active.sizeLabel}'
-                                  : 'Not downloaded yet',
-                              style: textTheme.bodySmall,
-                            ),
+                            Text(headline, style: textTheme.bodyMedium),
+                            if (detail != null) ...[
+                              const SizedBox(height: 2),
+                              Text(detail, style: textTheme.bodySmall),
+                            ],
                           ],
                         ),
                       ),
