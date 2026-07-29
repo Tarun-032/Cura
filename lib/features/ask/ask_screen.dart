@@ -927,15 +927,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
                 ),
               ),
 
-              // Footer: disclaimer + input bar.
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-                child: Text(
-                  'Organizes and explains your documents. Not medical advice.',
-                  textAlign: TextAlign.center,
-                  style: textTheme.labelSmall,
-                ),
-              ),
+              const SizedBox(height: 4),
               _InputBar(
                 controller: _input,
                 focusNode: _inputFocus,
