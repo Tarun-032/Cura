@@ -109,34 +109,34 @@ optional app lock. Every step can be skipped.
 
 | Welcome | Choose an engine | Cloud option |
 |:---:|:---:|:---:|
-| <img src="screenshots/01-onboarding-welcome.jpg" width="240"> | <img src="screenshots/02-onboarding-engine-on-device.jpg" width="240"> | <img src="screenshots/03-onboarding-engine-cloud.jpg" width="240"> |
-| Privacy promise and a one tap start | On-device is explained in full, with its real tradeoffs | The cloud option is opt in, never the silent default |
+| <img src="screenshots/01-onboarding-welcome.jpg" width="240" height="520"> | <img src="screenshots/02-onboarding-engine-on-device.jpg" width="240" height="520"> | <img src="screenshots/03-onboarding-engine-cloud.jpg" width="240" height="520"> |
+| Privacy promise and<br>a one tap start | On-device is explained in full,<br>with its real tradeoffs | The cloud option is opt in,<br>never the silent default |
 
 | Download a model | Connect a provider | Voice input |
 |:---:|:---:|:---:|
-| <img src="screenshots/04-onboarding-model-download.jpg" width="240"> | <img src="screenshots/05-onboarding-cloud-setup.jpg" width="240"> | <img src="screenshots/06-onboarding-voice.jpg" width="240"> |
-| One recommended for your phone, the choice is still yours | Bring your own API key, with a test button | Optional Whisper download for speaking your questions |
+| <img src="screenshots/04-onboarding-model-download.jpg" width="240" height="520"> | <img src="screenshots/05-onboarding-cloud-setup.jpg" width="240" height="520"> | <img src="screenshots/06-onboarding-voice.jpg" width="240" height="520"> |
+| One recommended for your phone,<br>the choice is still yours | Bring your own API key,<br>with a test button | Optional Whisper download<br>for speaking your questions |
 
 | App lock |
 |:---:|
-| <img src="screenshots/07-onboarding-app-lock.jpg" width="240"> |
+| <img src="screenshots/07-onboarding-app-lock.jpg" width="240" height="520"> |
 | Optional fingerprint or screen lock to open Cura |
 
 ### Using it
 
 | Add a document | Your records | Timeline |
 |:---:|:---:|:---:|
-| <img src="screenshots/08-add-document.jpg" width="240"> | <img src="screenshots/09-home-records.jpg" width="240"> | <img src="screenshots/10-timeline.jpg" width="240"> |
-| Scan with the camera, import a PDF, or type a note | Search and filter by type, newest first | Everything in date order, grouped by month |
+| <img src="screenshots/08-add-document.jpg" width="240" height="520"> | <img src="screenshots/09-home-records.jpg" width="240" height="520"> | <img src="screenshots/10-timeline.jpg" width="240" height="520"> |
+| Scan with the camera,<br>import a PDF, or type a note | Search and filter by type,<br>newest first | Everything in date order,<br>grouped by month |
 
 | Ask | Settings | Models |
 |:---:|:---:|:---:|
-| <img src="screenshots/11-ask.jpg" width="240"> | <img src="screenshots/12-settings.jpg" width="240"> | <img src="screenshots/13-settings-models.jpg" width="240"> |
-| Ask about your records, answers cite their source | Data controls, app lock, and engine settings | Switch or delete models, see which engine is live |
+| <img src="screenshots/11-ask.jpg" width="240" height="520"> | <img src="screenshots/12-settings.jpg" width="240" height="520"> | <img src="screenshots/13-settings-models.jpg" width="240" height="520"> |
+| Ask about your records,<br>answers cite their source | Data controls, app lock,<br>and engine settings | Switch or delete models,<br>see which engine is live |
 
 | Storage |
 |:---:|
-| <img src="screenshots/14-storage.jpg" width="240"> |
+| <img src="screenshots/14-storage.jpg" width="240" height="520"> |
 | See exactly what Cura is using on your phone |
 
 ---
