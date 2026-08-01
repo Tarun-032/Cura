@@ -112,27 +112,32 @@ optional app lock. Every step can be skipped.
 | <img src="screenshots/01-onboarding-welcome.jpg" width="240"> | <img src="screenshots/02-onboarding-engine-on-device.jpg" width="240"> | <img src="screenshots/03-onboarding-engine-cloud.jpg" width="240"> |
 | Privacy promise and a one tap start | On-device is explained in full, with its real tradeoffs | The cloud option is opt in, never the silent default |
 
-| Connect a provider | Voice input | App lock |
+| Download a model | Connect a provider | Voice input |
 |:---:|:---:|:---:|
-| <img src="screenshots/04-onboarding-cloud-setup.jpg" width="240"> | <img src="screenshots/05-onboarding-voice.jpg" width="240"> | <img src="screenshots/06-onboarding-app-lock.jpg" width="240"> |
-| Bring your own API key, with a test button | Optional Whisper download for speaking your questions | Optional fingerprint or screen lock to open Cura |
+| <img src="screenshots/04-onboarding-model-download.jpg" width="240"> | <img src="screenshots/05-onboarding-cloud-setup.jpg" width="240"> | <img src="screenshots/06-onboarding-voice.jpg" width="240"> |
+| One recommended for your phone, the choice is still yours | Bring your own API key, with a test button | Optional Whisper download for speaking your questions |
+
+| App lock |
+|:---:|
+| <img src="screenshots/07-onboarding-app-lock.jpg" width="240"> |
+| Optional fingerprint or screen lock to open Cura |
 
 ### Using it
 
-| First run | Add a document | Your records |
+| Add a document | Your records | Timeline |
 |:---:|:---:|:---:|
-| <img src="screenshots/07-home-empty.jpg" width="240"> | <img src="screenshots/08-add-document.jpg" width="240"> | <img src="screenshots/09-home-records.jpg" width="240"> |
-| Empty state before anything is added | Scan with the camera, import a PDF, or type a note | Search and filter by type, newest first |
+| <img src="screenshots/08-add-document.jpg" width="240"> | <img src="screenshots/09-home-records.jpg" width="240"> | <img src="screenshots/10-timeline.jpg" width="240"> |
+| Scan with the camera, import a PDF, or type a note | Search and filter by type, newest first | Everything in date order, grouped by month |
 
-| Timeline | Ask | Settings |
+| Ask | Settings | Models |
 |:---:|:---:|:---:|
-| <img src="screenshots/10-timeline.jpg" width="240"> | <img src="screenshots/11-ask.jpg" width="240"> | <img src="screenshots/12-settings.jpg" width="240"> |
-| Everything in date order, grouped by month | Ask about your records, answers cite their source | Data controls, app lock, and engine settings |
+| <img src="screenshots/11-ask.jpg" width="240"> | <img src="screenshots/12-settings.jpg" width="240"> | <img src="screenshots/13-settings-models.jpg" width="240"> |
+| Ask about your records, answers cite their source | Data controls, app lock, and engine settings | Switch or delete models, see which engine is live |
 
-| Models | Storage |
-|:---:|:---:|
-| <img src="screenshots/13-settings-models.jpg" width="240"> | <img src="screenshots/14-storage.jpg" width="240"> |
-| Switch or delete models, see which engine is live | See exactly what Cura is using on your phone |
+| Storage |
+|:---:|
+| <img src="screenshots/14-storage.jpg" width="240"> |
+| See exactly what Cura is using on your phone |
 
 ---
 
