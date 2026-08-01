@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../library/document.dart';
+import 'document_shape.dart';
 
 /// A single OCR text line with its geometry. Deliberately decoupled from ML Kit
 /// (no plugin types) so [parseResultsTable] is pure Dart and unit-testable.
@@ -460,10 +461,15 @@ List<DocumentResult> _mergeResultRows(
   return out;
 }
 
+/// Group 1 is the test name when ML Kit merged it into the cell, which it does
+/// whenever the name reaches the value column. The number tolerates the letters
+/// OCR swaps for digits ("Positive,l61.00"); [_fixNumeric] repairs the capture.
 final _verdictMeasurementRe = RegExp(
-  r'^\s*(not\s+detected|non[\s-]?react[iIl1]ve|react[iIl1]ve|'
+  r'^\s*(?:(.*[A-Za-z]{3}.*?)[\s,;:]+)?'
+  r'(not\s+detected|non[\s-]?react[iIl1]ve|react[iIl1]ve|'
   r'pos[iIl1]tive|negative|equ[iIl1]vocal|borderline|detected)'
-  r'\s*[,;:]?\s*([<>]?\d[\d,]*(?:\.\d+)?)\s*([A-Za-z%/µ.]+)?\s*$',
+  r'\s*[,;:]?\s*([<>]?[\dlIioO][\d,lIioO]*(?:\.[\d,lIioO]+)?)\s*'
+  r'([A-Za-z%/µ.]+)?\s*$',
   caseSensitive: false,
 );
 
@@ -493,7 +499,10 @@ List<DocumentResult> _parseVerdictMeasurements(List<OcrLine> lines) {
     // Match the raw token first: numeric repair across "Positive,161.00" would
     // turn both `i`s into `1`s. Only the captured numeric field is repaired.
     final match = _verdictMeasurementRe.firstMatch(line.text);
-    if (match != null) observed.add((line: line, match: match));
+    // A capture of only OCR letters is not a measurement.
+    if (match != null && _digit.hasMatch(match.group(3)!)) {
+      observed.add((line: line, match: match));
+    }
   }
   if (observed.isEmpty) return const [];
 
@@ -501,6 +510,7 @@ List<DocumentResult> _parseVerdictMeasurements(List<OcrLine> lines) {
   for (var i = 0; i < observed.length; i++) {
     final item = observed[i];
     final valueLine = item.line;
+    final inlineLabel = item.match.group(1)?.trim();
     final labelCandidates = ordered.where((line) {
       if (line.left >= valueLine.left) return false;
       if ((line.cy - valueLine.cy).abs() > rowTolerance) return false;
@@ -510,19 +520,27 @@ List<DocumentResult> _parseVerdictMeasurements(List<OcrLine> lines) {
         return false;
       }
       final letters = RegExp(r'[A-Za-z]').allMatches(text).length;
-      return letters >= 3 && !_verdictMeasurementRe.hasMatch(text);
+      if (letters < 3 || _verdictMeasurementRe.hasMatch(text)) return false;
+      // Filtered here, not after picking, so the method sub-line printed under
+      // a test name loses to the name instead of taking the row with it.
+      return !isIdentityFieldLabel(_cleanLabel(text));
     }).toList();
-    if (labelCandidates.isEmpty) continue;
+    if (labelCandidates.isEmpty && inlineLabel == null) continue;
     labelCandidates.sort((a, b) {
       final vertical = (a.cy - valueLine.cy).abs().compareTo(
         (b.cy - valueLine.cy).abs(),
       );
       return vertical != 0 ? vertical : b.right.compareTo(a.right);
     });
+    // A name printed in the cell beats one guessed from a neighbouring column.
     final label = _cleanLabel(
-      labelCandidates.first.text.replaceAll(RegExp(r'[,;]+$'), ''),
+      (inlineLabel ?? labelCandidates.first.text).replaceAll(
+        RegExp(r'[,;]+$'),
+        '',
+      ),
     );
-    if (label.isEmpty) continue;
+    // Otherwise a reference-interval line takes the unit header as its label.
+    if (label.isEmpty || isIdentityFieldLabel(label)) continue;
 
     final unitCandidates = ordered.where((line) {
       return line.left > valueLine.left &&
@@ -533,7 +551,7 @@ List<DocumentResult> _parseVerdictMeasurements(List<OcrLine> lines) {
       (a, b) =>
           (a.cy - valueLine.cy).abs().compareTo((b.cy - valueLine.cy).abs()),
     );
-    final inlineUnit = item.match.group(3)?.trim();
+    final inlineUnit = item.match.group(4)?.trim();
     final unit = _fixUnitToken(
       inlineUnit?.isNotEmpty == true
           ? inlineUnit
@@ -554,8 +572,8 @@ List<DocumentResult> _parseVerdictMeasurements(List<OcrLine> lines) {
         .map((line) => _fixNumeric(line.text).trim())
         .where((text) => text.isNotEmpty)
         .join('; ');
-    final verdict = _canonicalVerdict(item.match.group(1)!);
-    final number = _stripFlags(_fixNumeric(item.match.group(2)!));
+    final verdict = _canonicalVerdict(item.match.group(2)!);
+    final number = _stripFlags(_fixNumeric(item.match.group(3)!));
     results.add(
       DocumentResult(
         label,
@@ -760,7 +778,8 @@ List<DocumentResult> _parseResultsTable(List<OcrLine> lines) {
         value = recovered.value;
       }
     }
-    if (label.isEmpty) continue;
+    // The patient block has the same two-column shape, so it parses cleanly.
+    if (label.isEmpty || isIdentityFieldLabel(label)) continue;
     var range = rowRanges[i]?.norm.trim();
     // Merge a separate units-column cell into the range when it lacks a unit.
     if (range != null && range.isNotEmpty && rowUnits[i] != null) {

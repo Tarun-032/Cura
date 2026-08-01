@@ -445,4 +445,192 @@ Basophils 0 % 0-2
       expect(merged.single.value, '32.0');
     });
   });
+
+  group('labRowsUnderCovered', () {
+    const cleanCbc = 'Haemoglobin 14.2 gm% 13 - 17\nPlatelet Count 250';
+
+    test('a table with every row read asks for nothing', () {
+      expect(
+        labRowsUnderCovered(
+          rows: const [
+            DocumentResult('Haemoglobin', '14.2'),
+            DocumentResult('Platelet Count', '250'),
+          ],
+          ocrText: cleanCbc,
+        ),
+        isFalse,
+      );
+    });
+
+    test('no rows at all is the clearest signal', () {
+      expect(labRowsUnderCovered(rows: const [], ocrText: cleanCbc), isTrue);
+    });
+
+    test('a blank value counts as under-covered', () {
+      expect(
+        labRowsUnderCovered(
+          rows: const [
+            DocumentResult('Haemoglobin', ''),
+            DocumentResult('Platelet Count', '250'),
+          ],
+          ocrText: cleanCbc,
+        ),
+        isTrue,
+      );
+    });
+
+    test('more observed-value lines than rows means one was missed', () {
+      // Two of three antibody rows parsed; only the printed page knows.
+      const ocr =
+          'Rubella Virus - IgG antibody Reactive,45.90\n'
+          'Measles (Rubeola) Virus - IgG antibody Positive,161.00\n'
+          'Mumps virus IgG antibody, Serum Positive,96.30';
+      expect(
+        labRowsUnderCovered(
+          rows: const [
+            DocumentResult('Rubella Virus - IgG antibody', 'Reactive, 45.90'),
+            DocumentResult(
+              'Mumps virus IgG antibody, Serum',
+              'Positive, 96.30',
+            ),
+          ],
+          ocrText: ocr,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('labRows extraction', () {
+    // The AFB culture page: verdicts written as sentences, no value column.
+    const afbOcr = '''
+MICROBIOLOGY
+Name : Example Person
+UHID : ANM1.0001005350
+TEST NAME RESULT
+ACID FAST STAIN OTHERS
+Specimen Type Right supra clavicular lymph node
+AFB Smear No AFB seen
+AFB CULTURE [OTHERS]
+Culture Report: TB:707
+14/09/2024: No Mycobacterium species isolated at the end of 10days.
+''';
+
+    test('keeps a qualitative row no verdict vocabulary could enumerate', () {
+      const raw = '''
+{"results":[{"label":"AFB Smear","value":"No AFB seen"}]}''';
+      final ext = parseScanExtraction(raw, afbOcr, labRows: true);
+      expect(ext, isNotNull);
+      expect(ext!.groundedLabRows, isTrue);
+      expect(ext.results.single.label, 'AFB Smear');
+      expect(ext.results.single.value, 'No AFB seen');
+    });
+
+    test('never flips a negative result into a positive one', () {
+      const raw = '{"results":[{"label":"AFB Smear","value":"AFB seen"}]}';
+      expect(parseScanExtraction(raw, afbOcr, labRows: true), isNull);
+    });
+
+    test('drops a test name that is not printed on the page', () {
+      const raw =
+          '{"results":[{"label":"Mycobacterium Culture","value":"No AFB seen"}]}';
+      expect(parseScanExtraction(raw, afbOcr, labRows: true), isNull);
+    });
+
+    test('refuses the patient and order block as results', () {
+      const raw =
+          '{"results":['
+          '{"label":"UHID","value":"ANM1.0001005350"},'
+          '{"label":"Specimen Type","value":"Right supra clavicular lymph node"},'
+          '{"label":"AFB Smear","value":"No AFB seen"}]}';
+      final ext = parseScanExtraction(raw, afbOcr, labRows: true);
+      expect(ext!.results.map((row) => row.label), ['AFB Smear']);
+    });
+
+    test('an invented number is dropped even with a real label', () {
+      const raw = '{"results":[{"label":"AFB Smear","value":"12.4"}]}';
+      expect(parseScanExtraction(raw, afbOcr, labRows: true), isNull);
+    });
+
+    // The serology page: the value column wraps ", Serum" onto the next line.
+    const serologyOcr = '''
+Investigation Observed Value Unit Biological Reference Interval
+Measles (Rubeola) Virus - IgG antibody, Positive,161.00 AU/mL Negative: < 13.5
+Serum
+(Serum, Chemiluminescence Immunoassay (CLIA))
+Mumps virus IgG antibody, Serum Positive,96.30 AU/mL Negative: < 9.0
+''';
+
+    test(
+      'keeps a test name the value column wrapped, trimmed to what is printed',
+      () {
+        const raw =
+            '{"results":[{"label":"Measles (Rubeola) Virus - IgG antibody, Serum",'
+            '"value":"Positive, 161.00","unit":"AU/mL"}]}';
+        final ext = parseScanExtraction(raw, serologyOcr, labRows: true);
+        expect(
+          ext!.results.single.label,
+          'Measles (Rubeola) Virus - IgG antibody',
+        );
+        expect(ext.results.single.value, 'Positive, 161.00');
+      },
+    );
+
+    test('refuses a name stitched from words scattered over the page', () {
+      const raw =
+          '{"results":[{"label":"Measles Reference Interval Investigation",'
+          '"value":"Positive, 161.00"}]}';
+      expect(parseScanExtraction(raw, serologyOcr, labRows: true), isNull);
+    });
+
+    test('the method sub-line is never a row of its own', () {
+      const raw =
+          '{"results":[{"label":"(Serum, Chemiluminescence Immunoassay (CLIA))",'
+          '"value":"Positive, 161.00"}]}';
+      expect(parseScanExtraction(raw, serologyOcr, labRows: true), isNull);
+    });
+
+    test('grounded rows only add; geometry rows survive byte for byte', () {
+      const deterministic = [
+        DocumentResult(
+          'Rubella Virus - IgG antibody',
+          'Reactive, 45.90',
+          unit: 'IU/mL',
+          range: 'Non-reactive: < 10',
+        ),
+      ];
+      const refined = [
+        // Same test the geometry already read, plus the one it missed.
+        DocumentResult('Rubella Virus - IgG antibody', 'Reactive'),
+        DocumentResult(
+          'Measles (Rubeola) Virus - IgG antibody',
+          'Positive, 161.00',
+          unit: 'AU/mL',
+        ),
+      ];
+
+      final merged = mergeRefinedResults(
+        type: DocumentType.lab,
+        deterministic: deterministic,
+        refined: refined,
+        groundedLabRows: true,
+      );
+      expect(merged, hasLength(2));
+      expect(merged.first.value, 'Reactive, 45.90');
+      expect(merged.first.range, 'Non-reactive: < 10');
+      expect(merged.last.label, 'Measles (Rubeola) Virus - IgG antibody');
+    });
+
+    test('without the flag a lab merge still ignores the model entirely', () {
+      const deterministic = [DocumentResult('Haemoglobin', '14.2')];
+      expect(
+        mergeRefinedResults(
+          type: DocumentType.lab,
+          deterministic: deterministic,
+          refined: const [DocumentResult('Platelet Count', '250')],
+        ),
+        equals(deterministic),
+      );
+    });
+  });
 }

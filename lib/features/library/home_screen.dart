@@ -14,7 +14,6 @@ import '../export/export_selection_screen.dart';
 import '../pdf_import/pdf_import_service.dart';
 import '../scan/document_shape.dart';
 import '../scan/review_document_screen.dart';
-import '../scan/scan_extraction.dart';
 import '../scan/scan_service.dart';
 import '../scan/summary_rewriter.dart';
 import '../settings/settings_view.dart';
@@ -214,22 +213,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     var current = first;
     final draft = _draftFrom(current);
     final useRemote = await ref.read(remoteAiStoreProvider).remoteActive();
-    ScanRefinementJob? refinement;
-    // Cloud work is deliberately narrow: metadata, an empty receipt-purpose
-    // note, and rare OCR-cell table repair. Narrative summaries, prescriptions,
-    // bill rows, and ordinary lab values stay deterministic.
-    if ((useRemote && draft.type != DocumentType.prescription) ||
-        draft.type == DocumentType.receipt) {
-      refinement = ref
-          .read(aiServiceProvider)
-          .startDocumentRefinement(
-            current.text,
-            draftType: draft.type,
-            useRemote: useRemote,
-            title: draft.title,
-            tableEvidence: current.tableEvidence,
-          );
-    }
+    // scanRefinementFields decides what the model may touch; null when nothing.
+    final refinement = ref
+        .read(aiServiceProvider)
+        .startDocumentRefinement(
+          current.text,
+          draftType: draft.type,
+          useRemote: useRemote,
+          title: draft.title,
+          tableEvidence: current.tableEvidence,
+          deterministicResults: current.results,
+        );
     if (!mounted) {
       await _discardSource(current);
       return;

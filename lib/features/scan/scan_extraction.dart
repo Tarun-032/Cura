@@ -43,6 +43,7 @@ class ScanExtraction {
     this.results = const [],
     this.note,
     this.verifiedTableRepair = false,
+    this.groundedLabRows = false,
   });
 
   final String? title;
@@ -54,6 +55,9 @@ class ScanExtraction {
   /// True only when proposed lab rows passed bounded, same-row OCR evidence
   /// validation on the device. JSON parsing alone can never set this flag.
   final bool verifiedTableRepair;
+
+  /// Rows read from the text, so weaker than [verifiedTableRepair]: add only.
+  final bool groundedLabRows;
 
   bool get isEmpty =>
       title == null &&
@@ -73,6 +77,8 @@ class ScanExtraction {
     note: fields.contains(ScanRefinementField.receiptNote) ? note : null,
     verifiedTableRepair:
         fields.contains(ScanRefinementField.results) && verifiedTableRepair,
+    groundedLabRows:
+        fields.contains(ScanRefinementField.results) && groundedLabRows,
   );
 }
 
@@ -140,9 +146,21 @@ String selectScanOcrForExtraction(
   return out.length <= maxChars ? out : out.substring(0, maxChars);
 }
 
+/// Whether geometry missed rows: none, a blank value, or more observed-value
+/// lines than rows (which catches two of three parsing).
+bool labRowsUnderCovered({
+  required List<DocumentResult> rows,
+  required String ocrText,
+}) {
+  if (rows.isEmpty) return true;
+  if (rows.any((row) => row.needsReview)) return true;
+  final observed = _compositeObservedValue.allMatches(ocrText).length;
+  return observed > rows.length;
+}
+
 final _compositeObservedValue = RegExp(
   r'\b(?:not\s+detected|non[\s-]?reactive|reactive|positive|negative|'
-  r'equivocal|borderline|posltive)\s*[,;:]?\s*[<>]?\d',
+  r'equivocal|borderline|posltive)\s*[,;:]?\s*[<>]?[lIioO]?\d',
   caseSensitive: false,
 );
 
@@ -169,10 +187,12 @@ final _generalExtractionSignal = RegExp(
 /// need [parseDate] to read them and their digits to be present.
 ///
 /// [parseDate] is injected so this stays pure and free of the scan service.
+/// [labRows] rows have no geometry, so both halves must be printed.
 ScanExtraction? parseScanExtraction(
   String raw,
   String ocrText, {
   DateTime? Function(String)? parseDate,
+  bool labRows = false,
 }) {
   final completeJson = firstCompleteJsonObject(raw);
   if (completeJson == null) return null;
@@ -180,6 +200,7 @@ ScanExtraction? parseScanExtraction(
 
   final normOcr = _normSpaced(ocrText);
   final normDigits = _digitsOnly(ocrText);
+  final lowerOcr = ocrText.toLowerCase();
 
   var title = _asString(obj['title'])?.trim();
   if (title != null &&
@@ -189,7 +210,7 @@ ScanExtraction? parseScanExtraction(
   // Titles are grounded like values, or a sparse payload turns a pharmacy
   // invoice into "COMPREHENSIVE METABOLIC PANEL". The 60% bar tolerates OCR
   // typos while a real copied heading always passes.
-  if (title != null && !_titleGrounded(ocrText.toLowerCase(), title)) {
+  if (title != null && !_titleGrounded(lowerOcr, title)) {
     title = null;
   }
 
@@ -209,7 +230,7 @@ ScanExtraction? parseScanExtraction(
   if (rawResults is List) {
     for (final r in rawResults) {
       if (r is! Map) continue;
-      final label = _asString(r['label'])?.trim();
+      var label = _asString(r['label'])?.trim();
       final value = _asString(r['value'])?.trim();
       if (label == null || value == null || label.isEmpty || value.isEmpty) {
         continue;
@@ -223,6 +244,12 @@ ScanExtraction? parseScanExtraction(
           (!_phraseGrounded(normOcr, label) ||
               !_phraseGrounded(normOcr, value))) {
         continue;
+      }
+      // Same for a text-read lab row, plus the header block.
+      if (labRows) {
+        final printed = _groundedLabelPrefix(normOcr, label);
+        if (printed == null || isIdentityFieldLabel(printed)) continue;
+        label = printed;
       }
       // A bill breakdown is geometry-only, so the model may not propose rows.
       // The prompt asks for results: [] on receipts; this enforces it.
@@ -256,6 +283,7 @@ ScanExtraction? parseScanExtraction(
     date: date,
     results: results,
     note: note,
+    groundedLabRows: labRows && results.isNotEmpty,
   );
   if (ext.isEmpty) return null;
   return enforceScanShape(ext, ocrText: ocrText);
@@ -277,6 +305,7 @@ ScanExtraction enforceScanShape(ScanExtraction ext, {String ocrText = ''}) {
       results: const [],
       note: ext.note,
       verifiedTableRepair: ext.verifiedTableRepair,
+      groundedLabRows: ext.groundedLabRows,
     );
   }
   if (type != ext.type) {
@@ -287,6 +316,7 @@ ScanExtraction enforceScanShape(ScanExtraction ext, {String ocrText = ''}) {
       results: ext.results,
       note: ext.note,
       verifiedTableRepair: ext.verifiedTableRepair,
+      groundedLabRows: ext.groundedLabRows,
     );
   }
   return ext;
@@ -294,13 +324,26 @@ ScanExtraction enforceScanShape(ScanExtraction ext, {String ocrText = ''}) {
 
 /// Geometry-parsed lab rows are complete and spatially grounded, so a model,
 /// which has no column geometry, may never replace or append to them.
+///
+/// [groundedLabRows] may only add; every deterministic row survives it.
 List<DocumentResult> mergeRefinedResults({
   required DocumentType type,
   required List<DocumentResult> deterministic,
   required List<DocumentResult> refined,
   bool verifiedTableRepair = false,
+  bool groundedLabRows = false,
 }) {
   if (type == DocumentType.lab) {
+    if (!verifiedTableRepair && groundedLabRows) {
+      return [
+        ...deterministic,
+        for (final candidate in refined)
+          if (!deterministic.any(
+            (local) => _resultLabelsEquivalent(local.label, candidate.label),
+          ))
+            candidate,
+      ];
+    }
     if (!verifiedTableRepair || refined.isEmpty) return deterministic;
     final remaining = [...refined];
     final merged = <DocumentResult>[];
@@ -415,6 +458,21 @@ bool _titleGrounded(String lowerOcr, String title) {
   if (tokens.isEmpty) return true;
   final hits = tokens.where(lowerOcr.contains).length;
   return hits / tokens.length >= 0.6;
+}
+
+/// The longest printed prefix of [label], since the value column between the
+/// columns often wraps a test name's tail onto the next line. Null when under
+/// 60% is printed, so a name stitched from scattered words is still refused.
+String? _groundedLabelPrefix(String normOcr, String label) {
+  final words = label.trim().split(RegExp(r'\s+'));
+  final least = (words.length * 0.6).ceil();
+  for (var end = words.length; end >= least; end--) {
+    final candidate = words.take(end).join(' ');
+    if (_phraseGrounded(normOcr, candidate)) {
+      return candidate.replaceAll(RegExp(r'[,;]+$'), '').trim();
+    }
+  }
+  return null;
 }
 
 /// Lowercased, non-alphanumerics collapsed to single spaces (padded), so word

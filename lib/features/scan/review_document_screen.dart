@@ -276,13 +276,15 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
           !summaryShaped &&
           !_resultsTouched &&
           ext.results.isNotEmpty) {
-        if (shaped == DocumentType.lab && ext.verifiedTableRepair) {
+        if (shaped == DocumentType.lab &&
+            (ext.verifiedTableRepair || ext.groundedLabRows)) {
           _seedResultRows(
             mergeRefinedResults(
               type: shaped,
               deterministic: _collectResults(),
               refined: ext.results,
-              verifiedTableRepair: true,
+              verifiedTableRepair: ext.verifiedTableRepair,
+              groundedLabRows: ext.groundedLabRows,
             ),
           );
         } else if (shaped == DocumentType.prescription ||
@@ -508,6 +510,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
               useRemote: useRemote,
               title: _titleController.text,
               tableEvidence: result.tableEvidence,
+              deterministicResults: result.results,
             );
         if (job != null && mounted) {
           _watchRefinement(job);
@@ -524,6 +527,32 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       ..showSnackBar(
         SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
       );
+  }
+
+  /// The read-only findings block, empty when there is nothing to show.
+  List<Widget> _findingsSection(TextTheme textTheme) {
+    final note = _resultsNote?.trim();
+    if (note == null || note.isEmpty) return const [];
+    return [
+      _summaryLabel(),
+      const SizedBox(height: 8),
+      _FieldBox(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: kDocumentTextCapHeight),
+          child: Scrollbar(
+            controller: _summaryScrollController,
+            child: SingleChildScrollView(
+              controller: _summaryScrollController,
+              child: Text(
+                note,
+                style: textTheme.bodyMedium?.copyWith(height: 1.5),
+              ),
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(height: 20),
+    ];
   }
 
   List<Widget> _prescriptionSections(TextTheme textTheme) => [
@@ -755,32 +784,13 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                     if (_type == DocumentType.prescription) ...[
                       ..._prescriptionSections(textTheme),
                     ] else if (_summaryShaped) ...[
-                      if (_resultsNote != null &&
-                          _resultsNote!.trim().isNotEmpty) ...[
-                        _summaryLabel(),
-                        const SizedBox(height: 8),
-                        _FieldBox(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(
-                              maxHeight: kDocumentTextCapHeight,
-                            ),
-                            child: Scrollbar(
-                              controller: _summaryScrollController,
-                              child: SingleChildScrollView(
-                                controller: _summaryScrollController,
-                                child: Text(
-                                  _resultsNote!,
-                                  style: textTheme.bodyMedium?.copyWith(
-                                    height: 1.5,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                      ],
+                      ..._findingsSection(textTheme),
                     ] else ...[
+                      // Findings beat an empty list; the editor stays below.
+                      if (_resultRows.isEmpty &&
+                          _type != DocumentType.receipt &&
+                          !_isRefining(ScanRefinementField.results))
+                        ..._findingsSection(textTheme),
                       _refinementLabel(
                         _type.structuredSectionLabel,
                         field: ScanRefinementField.results,

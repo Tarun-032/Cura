@@ -1,4 +1,5 @@
 import '../library/document.dart';
+import 'document_shape.dart';
 import 'table_parser.dart';
 
 /// Reads qualitative results ("MTB COMPLEX │ Not Detected") off pages the
@@ -94,17 +95,12 @@ String _canonVerdict(String raw) => raw
     .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
     .join(raw.contains('-') ? '-' : ' ');
 
-/// Patient block / letterhead / boilerplate — never a result label.
-final _labelNoiseRe = RegExp(
-  r'patient|name|age|sex|gender|uhid|ward|bed|bill|reg\.?\s*no|doctor|'
-  r'\bdr\.?\b|specimen|status|page|collected|received|reported|printed|'
-  r'checked|sample|method|test\s+name|\bresult\b|end of report',
-  caseSensitive: false,
-);
+/// Boilerplate a label must never be; patient fields are [isIdentityFieldLabel].
+final _labelNoiseRe = RegExp(r'method|end of report', caseSensitive: false);
 
 bool _plausibleLabel(String label) {
   if (label.length < 2 || label.length > 60) return false;
-  if (_labelNoiseRe.hasMatch(label)) return false;
+  if (_labelNoiseRe.hasMatch(label) || isIdentityFieldLabel(label)) return false;
   final letters = RegExp('[A-Za-z]').allMatches(label).length;
   final digits = RegExp(r'\d').allMatches(label).length;
   if (letters < 2 || digits > letters) return false;

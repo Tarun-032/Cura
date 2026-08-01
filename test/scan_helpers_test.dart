@@ -111,6 +111,21 @@ Haemoglobin 13.0 g/dL 14-18
           '* END OF REPORT *\n';
       expect(svc.detectTitle(text), 'Xpert MTB/RIF');
     });
+
+    test('rejects a report-status line that reads like a heading', () {
+      // All caps and says "report", so every shape check passes.
+      const text =
+          'MICROBIOLOGY\n'
+          'TEST NAME   RESULT\n'
+          'AFB CULTURE [OTHERS]   NO AFB GROWN TB:707\n'
+          '16/10/2024: No Mycobacterium species isolated at the end of 42 days.\n'
+          'THIS IS FINAL REPORT.\n'
+          'Report Status:Final\n'
+          'Amended Report\n';
+      final title = svc.detectTitle(text);
+      expect(title, isNot(contains('Final Report')));
+      expect(title, 'Microbiology');
+    });
   });
 
   group('extractDate', () {

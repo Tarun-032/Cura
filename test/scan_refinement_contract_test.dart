@@ -60,6 +60,13 @@ void main() {
     expect(specific, equals(expected));
   });
 
+  // Read end to end: every row complete, no verdict cell hiding.
+  const completeTable = [
+    DocumentResult('Haemoglobin', '14.2', unit: 'gm%', range: '13 - 17'),
+    DocumentResult('Platelet Count', '250', unit: 'x10^3/µL'),
+  ];
+  const completeOcr = 'Haemoglobin 14.2 gm% 13 - 17\nPlatelet Count 250';
+
   test('lab results are targeted only when OCR-cell repair is required', () {
     const evidence = TableRepairEvidence(
       [],
@@ -77,14 +84,75 @@ void main() {
       draftType: DocumentType.lab,
       useRemote: true,
       tableEvidence: evidence,
+      deterministicResults: completeTable,
+      ocrText: completeOcr,
     );
     final complete = AiService.scanRefinementFields(
       draftType: DocumentType.lab,
       useRemote: true,
+      deterministicResults: completeTable,
+      ocrText: completeOcr,
     );
 
     expect(repair, contains(ScanRefinementField.results));
     expect(complete, isNot(contains(ScanRefinementField.results)));
+  });
+
+  test('a lab table geometry could not read asks the model to read it', () {
+    // Verdicts as sentences, no value column, so no cells to repair.
+    const ocr =
+        'ACID FAST STAIN OTHERS\nSpecimen Type Right supra clavicular lymph '
+        'node\nAFB Smear No AFB seen\nAFB CULTURE [OTHERS]';
+    for (final useRemote in [true, false]) {
+      expect(
+        AiService.scanRefinementFields(
+          draftType: DocumentType.lab,
+          useRemote: useRemote,
+          ocrText: ocr,
+        ),
+        contains(ScanRefinementField.results),
+        reason: 'useRemote=$useRemote',
+      );
+    }
+  });
+
+  test('a partly-read serology table still asks about the rows it missed', () {
+    // Two of three parsed; the third cell is printed but has no row.
+    const ocr =
+        'Rubella Virus - IgG antibody Reactive,45.90\n'
+        'Measles (Rubeola) Virus - IgG antibody Positive,161.00\n'
+        'Mumps virus IgG antibody, Serum Positive,96.30';
+    expect(
+      AiService.scanRefinementFields(
+        draftType: DocumentType.lab,
+        useRemote: true,
+        deterministicResults: const [
+          DocumentResult('Rubella Virus - IgG antibody', 'Reactive, 45.90'),
+          DocumentResult('Mumps virus IgG antibody, Serum', 'Positive, 96.30'),
+        ],
+        ocrText: ocr,
+      ),
+      contains(ScanRefinementField.results),
+    );
+  });
+
+  test('on-device work stays limited to the rows, never the metadata', () {
+    final fields = AiService.scanRefinementFields(
+      draftType: DocumentType.lab,
+      useRemote: false,
+      ocrText: 'MTB COMPLEX Not Detected',
+    );
+    expect(fields, equals({ScanRefinementField.results}));
+    // A complete local table still buys nothing from a small model.
+    expect(
+      AiService.scanRefinementFields(
+        draftType: DocumentType.lab,
+        useRemote: false,
+        deterministicResults: completeTable,
+        ocrText: completeOcr,
+      ),
+      isEmpty,
+    );
   });
 
   test('compact contracts do not request discarded narrative summaries', () {

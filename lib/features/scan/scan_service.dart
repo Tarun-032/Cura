@@ -1170,6 +1170,11 @@ const _summarySections = [
   'macroscopic description',
   'microscopic description',
   'comment',
+  // Microbiology answers in sentences under these, not a table.
+  'culture report',
+  'smear findings',
+  'organism',
+  'sensitivity',
 ];
 
 /// A section header at the start of a line: one that gets summarized, or one
@@ -1178,6 +1183,8 @@ final _sectionHeaderRe = RegExp(
   r'^(indication|findings?|impression|conclusion|opinion|advice|protocol|'
   r'technique|procedure|comments?|history|note|reference|ref|report status|'
   r'specimen|macroscopic\s+description|microscopic\s+description|method|'
+  r'culture\s+report|smear\s+findings|organisms?\s+isolated|organism|'
+  r'sensitivity|antibiotic\s+sensitivity|'
   r'diagnosis|final\s+diagnosis|hospital\s+course|treatment|'
   r'chief\s+complaints?|complaints?|examination|o/e|investigations?|'
   r'follow[\s-]?up|review|plan|rx|sig|'
@@ -1298,9 +1305,12 @@ const _knownProcedures = <String, String>{
 
 /// Boilerplate that must never become a title, even when it contains a
 /// title keyword ("* END OF REPORT *", "Page 1 of 2", specimen/date rows).
+/// "THIS IS FINAL REPORT." passes every shape check and beats the test name.
 final _titleBlocklist = RegExp(
   r'end of report|page\s+\d+\s+of\s+\d+|^\W*(specimen|collected|received|'
-  r'reported|printed|checked|test name|dob)\b',
+  r'reported|printed|checked|test name|dob)\b|'
+  r'this\s+is\s+(?:the\s+)?final\s+report|report\s+status|'
+  r'^\W*(?:amended|provisional|final|preliminary|interim)\s+report\b',
   caseSensitive: false,
 );
 

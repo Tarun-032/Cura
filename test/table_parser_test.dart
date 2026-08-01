@@ -533,6 +533,8 @@ void main() {
         100,
       ),
       _line('Rubella Virus - IgG antibody', 50, 150),
+      // The method sub-line sits under the name, inside the same row band.
+      _line('(Serum, Electrochemiluminescence Immunoassay)', 50, 176),
       _line('Reactive,45.90', 430, 150),
       _line('IU/mL', 610, 150),
       _line('Non-reactive: < 10', 760, 150),
@@ -546,6 +548,7 @@ void main() {
       _line('Reference:', 50, 285),
       _line('Journal of Diagnostics, May 13, 2016.', 50, 315),
       _line('Measles (Rubeola) Virus - IgG antibody, Serum', 50, 370),
+      _line('(Serum, Chemiluminescence Immunoassay (CLIA))', 50, 396),
       _line('Posltive,161.00', 430, 370),
       _line('AU/mL', 610, 370),
       _line('Negative: < 13.5', 760, 370),
@@ -554,6 +557,7 @@ void main() {
       _line('Clinical Utility:', 50, 455),
       _line('Narrative medical explanation.', 50, 485),
       _line('Mumps virus IgG antibody, Serum', 50, 540),
+      _line('(Serum, Chemiluminescence Immunoassay (CLIA))', 50, 566),
       _line('Positive,96.30', 430, 540),
       _line('AU/mL', 610, 540),
       _line('Negative: < 9.0', 760, 540),
@@ -585,6 +589,35 @@ void main() {
       parsed.results.any((row) => row.label.contains('Interpretation')),
       isFalse,
     );
+    expect(parsed.results.any((row) => row.label.startsWith('(')), isFalse);
+  });
+
+  test('reads a row ML Kit merged into one line, with an OCR-typo number', () {
+    // Real geometry: the name reached the value column, so both landed in one
+    // TextLine, and the leading 1 of 161.00 was recognised as a lowercase L.
+    final lines = <OcrLine>[
+      OcrLine('Rubella Virus - IgG antibody', 131, 595, 782, 664),
+      OcrLine('Reactive 45.90', 1151, 629, 1485, 685),
+      OcrLine('IU/mL', 1680, 650, 1804, 692),
+      OcrLine('Non-reactive: < 10', 1990, 660, 2409, 703),
+      OcrLine(
+        'Measles (Rubeola) Virus - IgG antibody, Positive,l61.00',
+        86,
+        1631,
+        1466,
+        1714,
+      ),
+      OcrLine('AU/mL', 1666, 1667, 1813, 1705),
+      OcrLine('Negative:< 13.5', 2010, 1656, 2364, 1713),
+      OcrLine('Borderline: 13.5-16.49', 1982, 1728, 2521, 1775),
+    ];
+
+    final parsed = parseResultsTableDetailed(lines);
+    final measles = _byLabel(parsed.results, 'measles');
+    expect(measles.label, 'Measles (Rubeola) Virus - IgG antibody');
+    expect(measles.value, 'Positive, 161.00');
+    expect(measles.unit, 'AU/mL');
+    expect(measles.range, contains('Negative:< 13.5'));
   });
 
   test(
@@ -925,5 +958,49 @@ void main() {
     final tp = _byLabel(results, 'total proteins');
     expect(tp.range, '6.0 - 8.3');
     expect(tp.unit, 'gm%');
+  });
+
+  test('the patient and order block never becomes result rows', () {
+    // The header has the table's shape, so geometry reads it as rows.
+    final lines = <OcrLine>[
+      _line('ORDER NO.', 50, 100),
+      _line('44554772', 400, 100),
+      _line('NAME', 50, 140),
+      _line('EXAMPLE PERSON', 400, 140),
+      _line('AGE', 50, 180),
+      _line('21', 400, 180),
+      _line('Rpt Released dt.', 50, 220),
+      _line('11-Sep-2024', 400, 220),
+      _line('Test', 50, 300),
+      _line('Result', 400, 300),
+      _line('TB PYROSEQUENCING XDR', 50, 340),
+      _line('NOT DETECTED', 400, 340),
+    ];
+    final labels = parseResultsTable(lines).map((r) => r.label).toList();
+    for (final header in ['ORDER NO.', 'NAME', 'AGE', 'Rpt Released dt.']) {
+      expect(labels, isNot(contains(header)));
+    }
+  });
+
+  test('a dotted acronym label is not mistaken for a header field', () {
+    // "S.G.P.T" is all single letters, the same shape as "D.O.B".
+    final results = parseResultsTable(_page());
+    expect(results.map((r) => r.label), contains('S.G.P.T.'));
+    expect(results.map((r) => r.label), contains('S.G.O.T'));
+  });
+
+  test('a reference-interval line never becomes a bare unit row', () {
+    // The nearest line to its left is the unit header, not a label.
+    final lines = <OcrLine>[
+      _line('Measles (Rubeola) Virus - IgG antibody', 50, 100),
+      _line('Positive,161.00', 500, 100),
+      _line('AU/mL', 720, 100),
+      _line('Negative: <13.5', 720, 140),
+      _line('Borderline: 13.5-16.49', 720, 180),
+    ];
+    final results = parseResultsTable(lines);
+    expect(results.map((r) => r.label), isNot(contains('AU/mL')));
+    expect(results.single.label, 'Measles (Rubeola) Virus - IgG antibody');
+    expect(results.single.value, 'Positive, 161.00');
   });
 }

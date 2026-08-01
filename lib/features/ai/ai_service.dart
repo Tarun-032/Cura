@@ -47,7 +47,7 @@ class _ParsedAnswer {
   final String answer;
 }
 
-enum ScanExtractionMode { metadata, receipt, tableRepair }
+enum ScanExtractionMode { metadata, receipt, tableRepair, labRows }
 
 /// Raw output of one summary rewrite. [preempted] separates "the user asked a
 /// question and took the model back" from a real failure, so the queue can
@@ -1037,12 +1037,33 @@ class AiService {
       'row order, and keep every cell for one row within the same OCR pass. Do '
       'not return a note, summary, result values, patient details, or prose.';
 
+  // Read rather than repair: no cell IDs exist to map onto.
+  static const _labRowsExtractionPrompt =
+      'Read the minimized lab OCR and return ONLY one JSON object with optional '
+      'grounded metadata {"title":string,"type":"lab","date":string} and '
+      '{"results":[{"label":string,"value":string,"unit":string|null,'
+      '"range":string|null}]}. Copy the exact printed report heading and date; '
+      'never invent or paraphrase them. A title must be the printed test or '
+      'panel name, never a report status line such as "This is final report" or general heading like lab report or report the text will contain a text name use that, '
+      'and never a patient, doctor, hospital, or laboratory. '
+      'One entry per test the report actually reports. '
+      'Copy the label and the value exactly as printed, including qualitative '
+      'results such as "Not Detected", "No AFB seen", or "Positive, 161.00". '
+      'Never invent, translate, normalize, or infer a value, and never turn a '
+      'negative result into a positive one. Skip anything that is not a test '
+      'result: patient and doctor details, order, accession and registration '
+      'numbers, dates, specimen and ward fields, page footers, '
+      'reference-interval and interpretation prose, and method notes. Return an '
+      'empty list if the page reports none. Do not return a note, summary, '
+      'prose, or patient details.';
+
   @visibleForTesting
   static String scanExtractionSystemPrompt(ScanExtractionMode mode) =>
       switch (mode) {
         ScanExtractionMode.metadata => _metadataExtractionPrompt,
         ScanExtractionMode.receipt => _receiptExtractionPrompt,
         ScanExtractionMode.tableRepair => _repairTablePrompt,
+        ScanExtractionMode.labRows => _labRowsExtractionPrompt,
       };
 
   // The one place the model writes prose about a document. It condenses and
@@ -1210,12 +1231,15 @@ class AiService {
     required bool useRemote,
     String? title,
     TableRepairEvidence tableEvidence = const TableRepairEvidence([]),
+    List<DocumentResult> deterministicResults = const [],
   }) {
     final fields = scanRefinementFields(
       draftType: draftType,
       useRemote: useRemote,
       title: title,
       tableEvidence: tableEvidence,
+      deterministicResults: deterministicResults,
+      ocrText: ocrText,
     );
     if (fields.isEmpty) return null;
     final cancellation = GenerationCancellation();
@@ -1240,10 +1264,11 @@ class AiService {
     required bool useRemote,
     String? title,
     TableRepairEvidence tableEvidence = const TableRepairEvidence([]),
+    List<DocumentResult> deterministicResults = const [],
+    String ocrText = '',
   }) {
     if (draftType == DocumentType.prescription ||
-        draftType == DocumentType.visit ||
-        (!useRemote && draftType != DocumentType.receipt)) {
+        draftType == DocumentType.visit) {
       return const {};
     }
     // Bills already have deterministic type/date and geometry-derived amounts, so
@@ -1251,14 +1276,22 @@ class AiService {
     if (draftType == DocumentType.receipt) {
       return const {ScanRefinementField.title, ScanRefinementField.receiptNote};
     }
+    // Geometry can never reach these rows, so it is worth either engine.
+    final underCovered =
+        draftType == DocumentType.lab &&
+        labRowsUnderCovered(rows: deterministicResults, ocrText: ocrText);
+    // Metadata stays cloud-only; a small local model rarely improves it.
+    if (!useRemote) {
+      return underCovered ? const {ScanRefinementField.results} : const {};
+    }
     return {
       ScanRefinementField.type,
       ScanRefinementField.date,
       ScanRefinementField.title,
-      if (useRemote &&
-          draftType == DocumentType.lab &&
-          tableEvidence.canReconcile &&
-          tableEvidence.requiresReconciliation)
+      if (draftType == DocumentType.lab &&
+          ((tableEvidence.canReconcile &&
+                  tableEvidence.requiresReconciliation) ||
+              underCovered))
         ScanRefinementField.results,
     };
   }
@@ -1300,8 +1333,15 @@ class AiService {
       // metadata only and leave the row for review. Receipt breakdowns stay
       // geometry-only on both engines.
       final repairRequested = wantsRepair && safeEvidence.isNotEmpty;
+      // Cell-ID repair is stricter, so it keeps priority.
+      final rowsRequested =
+          !repairRequested &&
+          draftType == DocumentType.lab &&
+          fields.contains(ScanRefinementField.results);
       final mode = repairRequested
           ? ScanExtractionMode.tableRepair
+          : rowsRequested
+          ? ScanExtractionMode.labRows
           : draftType == DocumentType.receipt
           ? ScanExtractionMode.receipt
           : ScanExtractionMode.metadata;
@@ -1309,8 +1349,13 @@ class AiService {
       // A safe title rides along so metadata refinement stays useful.
       final remoteInput = repairRequested
           ? 'TABLE ROW EVIDENCE:\n$safeEvidence'
+          : rowsRequested
+          ? selectScanOcrForExtraction(cloudOcr, type: draftType)
           : cloudOcr;
-      final localInput = selectBillOcrForExtraction(text);
+      // Unredacted (nothing leaves the phone) but bounded.
+      final localInput = rowsRequested
+          ? selectScanOcrForExtraction(text, type: draftType)
+          : selectBillOcrForExtraction(text);
       final out = useRemote
           ? await _extractRemote(
               remoteInput,
@@ -1325,7 +1370,12 @@ class AiService {
       if (cancellation.cancelled) return null;
       // parseScanExtraction re-checks every value against the OCR, so an invented
       // number is dropped on either engine.
-      var ext = parseScanExtraction(out, text, parseDate: _scan.extractDate);
+      var ext = parseScanExtraction(
+        out,
+        text,
+        parseDate: _scan.extractDate,
+        labRows: rowsRequested,
+      );
       if (repairRequested) {
         final safeCells = tableEvidence.cellsPresentIn(safeEvidence);
         final reconciled = parseTableCellReconciliation(out, safeCells);
@@ -1345,7 +1395,7 @@ class AiService {
           );
         }
       }
-      final allowed = repairRequested
+      final allowed = repairRequested || rowsRequested
           ? fields
           : ({...fields}..remove(ScanRefinementField.results));
       ext = ext?.only(allowed);
@@ -1359,7 +1409,8 @@ class AiService {
         'mode=${mode.name} ms=${sw.elapsedMilliseconds} '
         'promptChars=$promptChars outputChars=${out.length} ok=${ext != null} '
         'results=${ext?.results.length ?? 0} repair=$repairRequested '
-        'verified=${ext?.verifiedTableRepair ?? false}',
+        'verified=${ext?.verifiedTableRepair ?? false} '
+        'grounded=${ext?.groundedLabRows ?? false}',
       );
       return ext;
     } catch (_) {
@@ -1469,7 +1520,9 @@ class AiService {
   static int _scanMaxTokens(ScanExtractionMode mode) => switch (mode) {
     ScanExtractionMode.metadata => 128,
     ScanExtractionMode.receipt => 128,
-    ScanExtractionMode.tableRepair => _remoteMaxTokens,
+    // A whole table, not a two-field header.
+    ScanExtractionMode.tableRepair ||
+    ScanExtractionMode.labRows => _remoteMaxTokens,
   };
 
   final ScanService _scan = ScanService();
