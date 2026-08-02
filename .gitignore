@@ -45,6 +45,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+/node_modules/
+/package.json
+/package-lock.json
+/.mcp.json
+
 # Signing secrets. The keystore itself lives outside the repo.
 /android/key.properties
 *.jks

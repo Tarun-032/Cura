@@ -381,7 +381,11 @@ class _ResultsCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 13),
               child: Row(
                 children: [
+                  // Both sides are flexible, so a long reference interval
+                  // wraps inside its own column instead of taking the row and
+                  // squeezing the test name down to one letter per line.
                   Expanded(
+                    flex: 3,
                     child: Text(
                       document.results[i].label,
                       style: textTheme.bodyMedium?.copyWith(
@@ -390,36 +394,41 @@ class _ResultsCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        document.results[i].needsReview
-                            ? 'Check value'
-                            : document.results[i].valueWithUnit,
-                        style: const TextStyle(
-                          fontFamily: 'PlusJakartaSans',
-                          fontSize: 14.5,
-                          fontWeight: FontWeight.w500,
-                          fontVariations: [FontVariation('wght', 500)],
-                          color: AppColors.ink,
-                        ),
-                      ),
-                      // A "normal range" means nothing on a receipt row; the
-                      // parser never sets one, but a hand-edited record could.
-                      if (document.results[i].range != null &&
-                          document.type != DocumentType.receipt) ...[
-                        const SizedBox(height: 2),
+                  Expanded(
+                    flex: 2,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         Text(
-                          document.results[i].range!,
-                          style: textTheme.bodySmall?.copyWith(
-                            color: AppColors.faint,
-                            fontSize: 11.5,
+                          document.results[i].needsReview
+                              ? 'Check value'
+                              : document.results[i].valueWithUnit,
+                          textAlign: TextAlign.end,
+                          style: const TextStyle(
+                            fontFamily: 'PlusJakartaSans',
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w500,
+                            fontVariations: [FontVariation('wght', 500)],
+                            color: AppColors.ink,
                           ),
                         ),
+                        // A "normal range" means nothing on a receipt row; the
+                        // parser never sets one, but a hand-edited record could.
+                        if (document.results[i].range != null &&
+                            document.type != DocumentType.receipt) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            document.results[i].range!,
+                            textAlign: TextAlign.end,
+                            style: textTheme.bodySmall?.copyWith(
+                              color: AppColors.faint,
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ],
               ),
