@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../../app/theme/app_colors.dart';
-import '../../core/widgets/cura_mark.dart';
+import '../../core/widgets/cura_logo_intro.dart';
 import 'engine_choice_screen.dart';
 
 /// First screen on launch. States the privacy promise over a staggered fade-up
@@ -37,20 +37,8 @@ class OnboardingScreen extends StatelessWidget {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const CuraLogoHalo(size: 208)
-                          .animate()
-                          .fadeIn(duration: _enterDuration, delay: 400.ms)
-                          .slideY(
-                            begin: _slideDy,
-                            duration: _enterDuration,
-                            curve: _enterCurve,
-                          )
-                          .scale(
-                            begin: const Offset(0.85, 0.85),
-                            end: const Offset(1, 1),
-                            duration: _enterDuration,
-                            curve: _enterCurve,
-                          ),
+                      // Has its own entrance animation, no flutter_animate chain.
+                      const CuraLogoIntro(size: 208),
                       const SizedBox(height: 20),
                       // Wordmark, sitting directly under the shield.
                       Text(
@@ -142,9 +130,7 @@ class OnboardingScreen extends StatelessWidget {
   }
 
   void _onGetStarted(BuildContext context) {
-    // Continue to the AI engine choice (hardware scan → on-device vs cloud).
-    // Kept in the stack so back works; the flow's terminals clear it and mark
-    // onboarding done (see finishOnboarding).
+    // Navigate to engine choice; keep on stack so back works.
     Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const EngineChoiceScreen()));

@@ -64,6 +64,9 @@ dependencies:
   # SAF "save file" dialog for the exported PDF — defaults to Downloads, no
   # storage permission or manifest change needed (scoped storage).
   file_picker: ^10.3.2
+  # Plays the bundled onboarding logo intro. The clip is a local asset, so this
+  # makes no network calls — see the privacy stance in README.md.
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:
@@ -96,6 +99,10 @@ flutter:
     - family: PlusJakartaSans
       fonts:
         - asset: assets/fonts/PlusJakartaSans.ttf
+
+  # The onboarding logo intro (see CuraLogoIntro). Bundled, never fetched.
+  assets:
+    - assets/video/Cura_intro_1.mp4
 
   # To add assets to your application, add an assets section, like this:
   # assets:
