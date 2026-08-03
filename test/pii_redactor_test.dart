@@ -825,6 +825,21 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       );
     });
 
+    test('a first-person contraction never starts a name run', () {
+      // "I'm" is Title-case shaped, so it used to pair with the next word and
+      // take it along: the cloud greeting arrived as ", your medical assistant".
+      expect(
+        deleteNameRuns("I'm Cura, your medical assistant").text,
+        "I'm Cura, your medical assistant",
+      );
+      expect(deleteNameRuns("I've reviewed Hemoglobin").text, contains("I've"));
+      // A real name run beside the contraction still goes.
+      expect(
+        deleteNameRuns("I'm Grace Quinn").text,
+        isNot(contains('Quinn')),
+      );
+    });
+
     test('leaves Title-case clinical headings untouched', () {
       for (final heading in [
         'Complete Blood Count',

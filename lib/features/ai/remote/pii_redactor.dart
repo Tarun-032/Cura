@@ -1,40 +1,24 @@
-/// Removes personal and identifying details from OCR text **before it is sent to
-/// a cloud model**. On-device inference never calls this, so it is a cloud-only
-/// barrier.
-///
-/// Aggressive by design: patient identity, contact details, record/ID numbers,
-/// the hospital name and the full postal address are stripped, keeping only
-/// medical content. A heuristic barrier, **not a guarantee**.
-///
-/// Pure and line-based, so it is unit-testable with no I/O. Over-redaction is
-/// safe: `parseScanExtraction` validates values against the *unredacted* OCR.
+/// Cloud-only scrub for OCR text.
+/// Aggressive, but not perfect.
+/// Keep medical content; strip obvious identity.
 library;
 
 import '../../scan/receipt_parser.dart' show hasMoneyToken;
 import 'clinical_vocabulary.dart';
 
-// ── Inline scrubs (applied to every kept line) ──────────────────────────────
+// Inline scrubs.
 final _email = RegExp(r'[\w.+-]+@[\w-]+\.[\w.-]+');
 final _url = RegExp(r'(https?://|www\.)\S+', caseSensitive: false);
-// Phone-like runs, kept specific so numeric lab ranges ("4000-11000") aren't
-// mistaken for phone numbers: an international +cc number, a bare 10-digit run,
-// or the common 5-5 / 3-3-4 groupings.
+// Catch phone-like runs, but not lab ranges.
 final _phone = RegExp(
   r'\+\d[\d\s\-]{7,}\d'
   r'|(?<!\d)\d{10}(?!\d)'
   r'|(?<!\d)\d{5}[\s\-]\d{5}(?!\d)'
   r'|(?<!\d)\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)',
 );
-// Long ID-like numbers (accession/order/barcode). Lab values are <=6 digits
-// (a platelet count is ~150000), so an 8+ digit run is an identifier, not a
-// reading — scrub it wherever it appears.
+// Catch long ID-like runs.
 final _longId = RegExp(r'\b\d{8,}\b');
-// Identifier labels followed by the value. Unlike [_longId], this catches short
-// alphanumeric medical IDs too; a label makes the intent unambiguous.
-// Split by strength. An unmistakable identifier word may carry its value with no
-// separator; a weak word that also occurs in ordinary billing prose ("First
-// Visit", "Invoice") needs an explicit no/number/id token or a separator, or it
-// eats the line item next to it.
+// Catch labeled IDs.
 final _labeledIdValue = RegExp(
   r'\b(?:(?:mrn|uhid|passport|ssn|social\s*security|npi|abha|aadhaar|aadhar)'
   r'\s*(?:no\.?|number|id|#)?'
@@ -45,8 +29,7 @@ final _labeledIdValue = RegExp(
   caseSensitive: false,
 );
 
-/// Postal addresses that do not carry an explicit `Address:` label. The street
-/// number + suffix pairing keeps ordinary measurements and reference ranges out.
+/// Catch street-style addresses.
 final _postalAddress = RegExp(
   r'\b(?:p\.?\s*o\.?\s*box\s+\d+|\d{1,6}\s+[A-Za-z0-9.#\- ]{2,40}\s+'
   r'(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|lane|ln\.?|'
@@ -61,11 +44,8 @@ final _postalCode = RegExp(
   caseSensitive: false,
 );
 
-/// Provider labels are kept separate from general identity fields so clinical
-/// uses of "provider" or "doctor" are not removed without a following value.
-// Case matters on the name: `caseSensitive: false` would let `[A-Z]` match a
-// lowercase word, so "doctor about the follow-up" would read as a clinician
-// name. The label is spelled in both cases instead.
+/// Keep provider labels separate.
+// Keep the label casing tight.
 final _providerField = RegExp(
   r'\b(?:[Oo]rdering|ORDERING|[Rr]eferring|REFERRING|[Aa]ttending|ATTENDING|'
   r'[Tt]reating|TREATING|[Cc]onsulting|CONSULTING|[Rr]eporting|REPORTING|'
@@ -83,15 +63,13 @@ final _dobValue = RegExp(
   caseSensitive: false,
 );
 
-// Reviewer/provider tails occasionally share an OCR line with an Impression.
-// Delete the tail rather than the whole medical sentence.
+// Drop reviewer tails.
 final _providerTail = RegExp(
   r'\b(?:reviewed|reported|verified|prepared|signed|interpreted|authorized)\s+by\b.*$',
   caseSensitive: false,
 );
 
-// Inline identity fields can ride after valid medical prose when OCR merges
-// columns. Stop at sentence punctuation so the clinical sentence survives.
+// Catch inline identity fields.
 final _inlineIdentityField = RegExp(
   r'\b(?:patient\s*(?:name|id|number|no\.?)|name\s+of\s+(?:the\s+)?patient|'
   r'doctor|consultant|physician|provider|clinician|prescriber|'
@@ -100,12 +78,7 @@ final _inlineIdentityField = RegExp(
   caseSensitive: false,
 );
 
-// Proper-name phrase ending in an unmistakable organisation kind. This catches
-// names composed only of dictionary words ("Sunshine General Hospital") without
-// requiring an impossible global hospital list.
-// Case stays significant on the prefix so "transferred to hospital" is never an
-// organisation, but the kind itself is matched in caps too: reports letterhead
-// in ALL-CAPS ("LAKEVIEW HOSPITAL & HEART INSTITUTE").
+// Catch facility names.
 final _inlineOrganisation = RegExp(
   r"\b(?:(?:[A-Z][A-Za-z'’-]*|&)\s+){1,6}"
   r'(?:[Hh]ospitals?|HOSPITALS?|[Cc]linics?|CLINICS?|'
@@ -126,9 +99,7 @@ final _inlineLocationField = RegExp(
   caseSensitive: false,
 );
 
-// ── Whole-word cues (both boundaries: `\b…\b`) ──────────────────────────────
-// Bounded on both sides so "pan"/"tel" don't match inside "pancreas"/"platelet".
-// A line carrying any of these as a word is identity text and is dropped whole.
+// Whole-word cues.
 final _dropWord = RegExp(
   r'\b(?:'
   // Person / relations. Bare "patient" is *not* here — discharge prose says
@@ -155,8 +126,7 @@ final _dropWord = RegExp(
   caseSensitive: false,
 );
 
-/// Patient *identity* labels only (`Patient Name:`, `Patient:`, …). Narrative
-/// "Patient was discharged…" must survive for discharge summaries.
+/// Keep patient identity labels only.
 final _patientLabel = RegExp(
   r'\bpatient\s*(?:name|id|no\.?|details?)?\s*[:/\-]'
   r'|\bpatient\s*name\b'
@@ -164,34 +134,28 @@ final _patientLabel = RegExp(
   caseSensitive: false,
 );
 
-/// Clinical uses of "hospital" that must not be whole-line-dropped as org stems
-/// (Hospital course, discharged, transferred to hospital, …).
+/// Let clinical hospital uses survive.
 final _hospitalClinical = RegExp(
   r'\bhospital\s*course\b|\bdischarged?\b|\badmission\b|'
   r'\b(?:in|to)\s*(?:the\s*)?hospital\b',
   caseSensitive: false,
 );
 
-/// Organisation-name stems, leading boundary only so suffixes match
-/// (laborator→laboratory). Bare "imaging" is not a stem, since clinical notes
-/// say "imaging findings"; only "Imaging Centre" / "Imaging Lab" are dropped.
+/// Catch organisation stems.
 final _dropStem = RegExp(
   r'\b(?:hospital|clinic|laborator|diagnostic|patholog|healthcare|radiolog|'
   r'imaging\s*(?:cent|clinic|lab|services|dept|department)|medical\s*cent)',
   caseSensitive: false,
 );
 
-/// Patient field labels like `Age: 45` / `Sex / Gender:` / `DOB -`. Bound left
-/// so "dosage:" doesn't match, and anchored by the trailing separator so a "Sex
-/// Hormone Binding Globulin" result line survives.
+/// Catch patient block fields.
 final _dropField = RegExp(
   r'\b(?:age|sex|gender|marital|d\.?o\.?b|date\s*of\s*birth)\s*[:/\-]'
   r'|\b[sdwcb]/o\b', // s/o, d/o, w/o, c/o, b/o
   caseSensitive: false,
 );
 
-/// A record/registration label followed by `No`/`Id`/`#`. The suffix requirement
-/// keeps result rows safe: "SAMPLE : TISSUE" stays, "Sample No" is dropped.
+/// Catch record-style labels.
 final _dropIdNo = RegExp(
   r'\b(?:order|adm|ex|op|ip|opd|ipd|reg|lab|acc|accession|sample|specimen|'
   r'bill|receipt|visit|ward|bed|room|mrn|uhid|passport|sid|srf|slide|'
@@ -199,8 +163,7 @@ final _dropIdNo = RegExp(
   caseSensitive: false,
 );
 
-/// City / state / union-territory names (India-focused), for address lines that
-/// are just a locality + city + PIN with no street word.
+/// Catch place names.
 final _place = RegExp(
   r'\b(?:'
   r'mumbai|navi\s*mumbai|delhi|new\s*delhi|bengaluru|bangalore|chennai|kolkata|'
@@ -217,29 +180,21 @@ final _place = RegExp(
   caseSensitive: false,
 );
 
-/// A spaced or bare 6-digit Indian PIN, treated as an address only when the line
-/// also carries a comma or geography cue, so a platelet count is never dropped.
+/// Catch Indian PINs when they look like addresses.
 final _spacedPin = RegExp(r'(?<!\d)\d{3}\s\d{3}(?!\d)');
 
-// ── Name-run deletion (bare names in kept clinical prose) ───────────────────
-// Names are unlistable, so instead of a denylist this deletes any run of two or
-// more adjacent capitalised tokens that are not known clinical vocabulary. A
-// lone capitalised unknown is never deleted; deletion needs a run.
+// Name-run deletion.
 
-/// One word, keeping internal apostrophes/hyphens so "Anne-Marie" / "D'Souza"
-/// are a single token.
+/// One token, with apostrophes and hyphens kept.
 final _nameWordToken = RegExp(r"[A-Za-z][A-Za-z'’\-]*");
 
-/// Title-case shape: an initial capital then lowercase, with capitalised parts
-/// allowed only after an apostrophe or hyphen (D'Souza, Anne-Marie). A bare
-/// single capital ("R." initial) also matches.
+/// Title-case shape for names.
 final _titleCaseName = RegExp(r"^[A-Z][a-z'’]*(?:['’\-][A-Z]?[a-z'’]+)*$");
 
-/// Shortest ALL-CAPS token that may join a name run. Below this every acronym
-/// column on a report (LDH, ECG, CRL, BPD, FHR, MTB) is left alone.
+/// Minimum caps length for a name token.
 const _minCapsNameToken = 4;
 
-/// No part of the token may be known clinical vocabulary (T-wave, HEART).
+/// Skip tokens that look clinical.
 bool _noClinicalPart(String token) {
   for (final part in token.toLowerCase().split(RegExp(r"[-'’]"))) {
     if (part.length >= 2 && isKnownClinicalToken(part)) return false;
@@ -247,7 +202,11 @@ bool _noClinicalPart(String token) {
   return true;
 }
 
+/// Keep first-person contractions out of name runs.
+final _firstPersonContraction = RegExp(r"^I['’]");
+
 bool _nameRunEligible(String token) {
+  if (_firstPersonContraction.hasMatch(token)) return false;
   // Reports print patient names in caps, so caps must not grant immunity. Long
   // unknown ALL-CAPS words join a run; short ones stay acronyms.
   if (token.length >= 2 && token == token.toUpperCase()) {
@@ -259,9 +218,7 @@ bool _nameRunEligible(String token) {
   return _noClinicalPart(token);
 }
 
-/// Deletes name-shaped runs from a line, returning it plus the removal count.
-/// Works on Title Case and ALL-CAPS alike, since a run only forms from adjacent
-/// words that are not clinical vocabulary.
+/// Delete name-shaped runs.
 ({String text, int runs}) deleteNameRuns(String line) {
   final tokens = _nameWordToken.allMatches(line).toList();
   final ranges = <List<int>>[]; // [start, end) spans to delete
@@ -295,15 +252,9 @@ bool _nameRunEligible(String token) {
   return (text: out, runs: ranges.length);
 }
 
-// ── Known-identity denylist (exact strings read off this document) ──────────
-// The scan already read the letterhead and the patient block. Rather than ask a
-// regex to re-recognise them in every later payload, the exact strings are
-// pulled out once and removed verbatim. An exact match cannot silently regress
-// the way a shape heuristic can.
+// Known-identity denylist.
 
-/// A labelled identity or quasi-identifier value. These exact values are also
-/// used to scrub cloud replies and cross-document context, where the label is no
-/// longer present and a shape-only regular expression would miss them.
+/// Exact identity values.
 final _identityValue = RegExp(
   r'\b(?:patient\s*name|patients?\s*name|name\s*of\s*(?:the\s*)?patient|'
   r'patient|name|(?:ordering|referring|attending|treating|consulting|reporting|'
@@ -316,7 +267,7 @@ final _identityValue = RegExp(
   caseSensitive: false,
 );
 
-/// A line that is a facility letterhead rather than clinical content.
+/// Facility letterhead pattern.
 final _facilityLine = RegExp(
   r'\b(?:hospital|clinic|institute|laborator(?:y|ies)|diagnostics?|'
   r'nursing\s+home|medical\s+(?:centre|center|college)|health\s+care|'
@@ -325,7 +276,7 @@ final _facilityLine = RegExp(
   caseSensitive: false,
 );
 
-/// Words never worth stripping on their own, even inside an identity phrase.
+/// Keep these words from being stripped alone.
 bool _stripWorthy(String token) =>
     token.length >= 4 &&
     !isKnownClinicalToken(token.toLowerCase()) &&
@@ -344,11 +295,7 @@ const _identityStopWords = <String>{
   'department',
 };
 
-/// The exact identity strings printed on [ocr]: the patient value from any
-/// labelled name field, and any letterhead line naming a facility.
-///
-/// Derived from the stored OCR, so records saved before this existed are
-/// covered too and no schema change is needed.
+/// Pull exact identity strings from OCR.
 Set<String> identityTermsFor(String ocr) {
   final terms = <String>{};
   if (ocr.trim().isEmpty) return terms;
@@ -379,18 +326,11 @@ Set<String> identityTermsFor(String ocr) {
   return terms;
 }
 
-/// Removes every term in [terms] from [text], plus the individual distinctive
-/// words inside them, case-insensitively and on word boundaries.
-///
-/// Whole-phrase removal alone is not enough: OCR re-flows the letterhead, so the
-/// facility can reappear as a fragment. Only tokens that are not clinical
-/// vocabulary are removed individually, so "HEART" inside a hospital name is
-/// never stripped out of "fetal heart rate".
+/// Remove exact identity terms and their words.
 String stripKnownIdentity(String text, Set<String> terms) {
   if (text.isEmpty || terms.isEmpty) return text;
   var out = text;
-  final phrases = terms.toList()
-    ..sort((a, b) => b.length.compareTo(a.length));
+  final phrases = terms.toList()..sort((a, b) => b.length.compareTo(a.length));
   for (final phrase in phrases) {
     out = out.replaceAll(
       RegExp(RegExp.escape(phrase), caseSensitive: false),
@@ -417,29 +357,18 @@ String stripKnownIdentity(String text, Set<String> terms) {
       .trim();
 }
 
-/// True when [text] carries letterhead or address vocabulary. The title gate
-/// uses it to reject a stored title that is really identity ("Meadowlark Hospital").
+/// Flag obvious identity context.
 bool containsIdentityContext(String text) =>
     _dropWord.hasMatch(text) ||
     _dropStem.hasMatch(text) ||
     _place.hasMatch(text) ||
     _patientLabel.hasMatch(text);
 
-/// True when [text] contains a city/state/locality or a spaced Indian PIN.
-/// Exposed so the receipt-title gate can still keep addresses out of vendor
-/// titles it otherwise sends verbatim.
+/// Flag place-like text.
 bool containsPlaceName(String text) =>
     _place.hasMatch(text) || _spacedPin.hasMatch(text);
 
-/// Results-row labels that make the entire row identity, whatever the value is.
-///
-/// A results table arrives already split into label and value, so the `Label:`
-/// separator every other rule here is anchored on has been consumed by the
-/// parser. Matching the bare label is what makes a demographic row visible to
-/// the barrier at all.
-///
-/// Age and sex are deliberately absent: they drive the risk calculation on a
-/// screening report and are weak identifiers on their own.
+/// Mark identity-style result rows.
 final _identityRowLabel = RegExp(
   r'^(?:'
   r"(?:patient|person'?s?|full)?\s*name"
@@ -460,29 +389,24 @@ final _identityRowLabel = RegExp(
   caseSensitive: false,
 );
 
-/// True when a results-row [label] means the row is identity, not a finding.
+/// Check identity row labels.
 bool isIdentityRowLabel(String label) => _identityRowLabel.hasMatch(
   label.trim().replaceAll(RegExp(r'[\s:\-#=.]+$'), ''),
 );
 
-/// Demographic labels kept on purpose: they are clinical inputs, not identity.
-/// Maternal age and sex drive the risk figure a screening report exists to
-/// produce, and neither identifies anyone on its own.
+/// Keep demographic labels.
 final _keptDemographicLabel = RegExp(
   r'^(?:(?:maternal|gestational|patient)?\s*age(?:\s*at\s*\w+)?'
   r'|sex|gender)$',
   caseSensitive: false,
 );
 
-/// True when a row is demographic but deliberately retained. [_dropField] treats
-/// `Age:` as a patient-block field, which is correct for an OCR line and wrong
-/// for a results row, so the row scrub consults this first.
+/// Check retained demographic rows.
 bool isKeptDemographicRowLabel(String label) => _keptDemographicLabel.hasMatch(
   label.trim().replaceAll(RegExp(r'[\s:\-#=.]+$'), ''),
 );
 
-/// Final block conditions, applied immediately before cloud serialization.
-/// Public so the typed gate and its tests share one hard stop.
+/// Final hard-risk stop.
 bool containsHardCloudRisk(String text) =>
     _email.hasMatch(text) ||
     _url.hasMatch(text) ||
@@ -499,9 +423,7 @@ bool containsHardCloudRisk(String text) =>
     _dropField.hasMatch(text) ||
     _dropIdNo.hasMatch(text);
 
-/// Returns [text] with personal and identifying details removed; empty in, empty
-/// out. Structured Ask-context headers (`[1] Title — Type — date`) have their
-/// title vetted by [_sanitizeStructuredHeader] before the normal inline scrub.
+/// Strip identity from cloud text.
 final _structuredHeader = RegExp(r'^\[\d+\]\s');
 
 String _sanitizeStructuredHeader(String raw) {
@@ -568,12 +490,7 @@ String redactForCloud(String text) {
   return out.join('\n');
 }
 
-/// Scrubs user-authored Ask text before it goes into a remote request.
-///
-/// [redactForCloud] drops whole lines, which on a chat message would erase the
-/// question along with the name. This variant removes identity spans and inline
-/// identifiers while keeping the surrounding question, for both the current turn
-/// and history.
+/// Scrub chat text without dropping the whole question.
 String redactConversationForCloud(String text) {
   if (text.trim().isEmpty) return '';
   var scrubbed = text
@@ -617,13 +534,9 @@ String redactConversationForCloud(String text) {
       .trim();
 }
 
-// ── Allowlist for bills (cloud scan refinement of receipts) ──────────────────
-// `keepMedicalLines` rejects exactly the lines a bill is made of (fees, totals,
-// GST), starving the model into inventing a lab title. Bills therefore keep only
-// money lines and billing wording; letterhead, patient block and barcodes go.
+// Bill allowlist.
 
-/// Billing wording that keeps a money-free line: table headers, totals, taxes.
-/// The vendor letterhead never matches, so the vendor name stays on the phone.
+/// Billing words that keep a line.
 final _billWord = RegExp(
   r'sub\s*-?\s*total|\btotal\b|\bnet\b|\bgross\b|\bgrand\b|\bgst\b|\bcgst\b|'
   r'\bsgst\b|\bigst\b|\btax\b|discount|\bamount\b|\bqty\b|quantity|\bmrp\b|'
@@ -633,8 +546,7 @@ final _billWord = RegExp(
   caseSensitive: false,
 );
 
-/// Identity wording that vetoes a bill line even when it carries money. Bills
-/// print names in ALL-CAPS, which the name-run deleter ignores by design.
+/// Veto identity-heavy bill lines.
 final _billIdentityVeto = RegExp(
   r"\b(?:mr|mrs|ms|master|miss|shri|smt|dr)\b\.?\s|patient|\bname\b|father|"
   r"husband|\bs/o\b|\bw/o\b|\bd/o\b|\bage\b|\bsex\b|\bdob\b|address|"
@@ -666,8 +578,7 @@ final _billSummaryLine = RegExp(
   caseSensitive: false,
 );
 
-/// The bill allowlist: lines with a money amount or billing wording, minus
-/// identity-veto lines. Pure selection — no scrubbing here.
+/// Keep bill lines with signal.
 List<String> keepBillLines(String ocr) {
   final lines = ocr.split('\n');
   final header = lines.indexWhere(_billTableHeader.hasMatch);
@@ -697,11 +608,7 @@ List<String> keepBillLines(String ocr) {
   return kept;
 }
 
-/// Bill payload for the cloud: allowlist, then per-line inline scrubs and the
-/// shared hard-risk stop. The scrub set is narrower than the conversation one
-/// because the allowlist veto already dropped every identity-labeled line.
-/// Name-run deletion is skipped on billing vocabulary, which is title-case and
-/// would otherwise be eaten.
+/// Build the cloud bill payload.
 String billCloudText(String ocr) {
   final gstin = RegExp(r'\bgstin\b\s*[:#]?\s*\w*', caseSensitive: false);
   // Scrub the id but keep the rest of the line, since its date is useful. The
@@ -759,12 +666,9 @@ String billCloudText(String ocr) {
   return out.join('\n');
 }
 
-// ── Allowlist: keep only lines that look medical ────────────────────────────
-// The strong barrier. Rather than enumerate what to remove, keep only lines with
-// a medical signal, so letterhead, patient block and footer go wholesale however
-// they are worded and whether or not the name is on any list.
+// Medical allowlist.
 
-/// A number attached to a unit, or a numeric reference range — a result reading.
+/// Match result-style values.
 final _valueUnit = RegExp(
   r'\d\s*(?:%|mg|mcg|ug|µg|ng|pg|kg|dl|ml|iu|miu|meq|mmol|umol|nmol|pmol|mol|'
   r'mm|cm|fl|sec|ratio|cells|cumm|cmm|hpf|lpf|/\s*(?:u?l|µl|cu\s?mm|hpf|lpf|ml)|'
@@ -774,7 +678,7 @@ final _valueUnit = RegExp(
   caseSensitive: false,
 );
 
-/// Qualitative verdicts (mirrors scan/qualitative_parser.dart `_verdicts`).
+/// Match verdict-style words.
 final _verdict = RegExp(
   r'\b(?:not\s+detected|detected|non[\s-]?reactive|reactive|positive|negative|'
   r'abnormal|normal|present|absent|nil|no\s+growth|growth|isolated|'
@@ -783,8 +687,7 @@ final _verdict = RegExp(
   caseSensitive: false,
 );
 
-/// Medical section headers and result-table words, mirroring scan_service's
-/// `_sectionHeaderRe` + `_summarySections`. Letterheads never use these.
+/// Match medical section words.
 final _medSection = RegExp(
   r'\b(?:test|result|investigation|findings?|impression|conclusion|opinion|'
   r'advice|comments?|interpretation|observation|specimen|sample|method|'
@@ -797,8 +700,7 @@ final _medSection = RegExp(
   caseSensitive: false,
 );
 
-/// Start-of-line medical section header (`Diagnosis:`, `Hospital course`, …).
-/// Used to open a keep-body window in [keepMedicalLines].
+/// Match medical section headers.
 final _medSectionHeader = RegExp(
   r'^(?:final\s*)?(?:diagnosis|procedure|findings?|impression|conclusion|'
   r'opinion|advice|indication|hospital\s*course|treatment|chief\s*complaint|'
@@ -810,8 +712,7 @@ final _medSectionHeader = RegExp(
   caseSensitive: false,
 );
 
-/// Strong identity / letterhead cues that end a medical-section body window
-/// (patient block resumed, address, org banner, reviewer/signature footer).
+/// Stop the medical window at identity cues.
 final _identityExit = RegExp(
   r'^(?:name|patient|age|sex|gender|address|phone|mobile|uhid|mrn|'
   r'referred|consultant|physician|signature|signed)\b'
@@ -822,8 +723,7 @@ final _identityExit = RegExp(
   caseSensitive: false,
 );
 
-/// Storage/disposal/legal footer prose, dropped whole before medical-section
-/// exceptions can preserve it, since it often carries the hospital and location.
+/// Drop footer prose.
 final _administrativeFooter = RegExp(
   r'\b(?:will\s+be\s+(?:stored|discarded|destroyed)|retained\s+for|'
   r'electronically\s+signed|end\s+of\s+report)\b'
@@ -835,7 +735,7 @@ final _administrativeFooter = RegExp(
   caseSensitive: false,
 );
 
-/// Known imaging/procedure phrases (mirrors scan_service `_knownProcedures`).
+/// Match procedure phrases.
 final _procedure = RegExp(
   r'\b(?:pet[\s/-]?ct|pet\s*scan|ct\s*scan|computed\s*tomography|mri|'
   r'magnetic\s*resonance|x[\s-]?ray|ultrasound|ultrasonograph|sonograph|usg|'
@@ -844,29 +744,14 @@ final _procedure = RegExp(
   caseSensitive: false,
 );
 
-/// A date next to collection or reporting context, which keeps the report date.
-///
-/// A bare "date" is deliberately not enough: OCR reads "Date of birth" as
-/// "Date of blrth" often enough that the denylist cannot be relied on to catch
-/// it afterwards, and an examination or admission date next to a name is the
-/// patient block rather than the report.
+/// Match report-like dates.
 final _reportDate = RegExp(
   r'(?:collect|receiv|report|releas|sample|drawn|registered|dated)\w*',
   caseSensitive: false,
 );
 final _anyDate = RegExp(r'\d{1,2}[\s./-][A-Za-z0-9]{2,}[\s./-]\d{2,4}');
 
-/// Whether a line may ride an open medical-section window on its own.
-///
-/// Two shapes qualify. Clinical prose is written in sentences, so it always
-/// carries a plain lowercase word. Clinical labels are Title Case but every
-/// substantial word is known vocabulary, which "Placenta Posterior" and
-/// "Maternal Serum Biochemistry" satisfy and "General Speciality" does not —
-/// one vocabulary hit is not enough, since letterheads borrow words like
-/// "general" and "heart".
-///
-/// Testing shape rather than spelling is what catches the fragments OCR has
-/// mangled, which no keyword list can match.
+/// Decide whether a line can ride the medical window.
 bool _carriesInSection(String line) {
   final words = line
       .split(RegExp(r'[^A-Za-z0-9]+'))
@@ -879,14 +764,7 @@ bool _carriesInSection(String line) {
   return words.every(isKnownClinicalToken);
 }
 
-/// Keeps only lines carrying a medical signal (value/unit, range, verdict,
-/// section header, procedure, the report [title], or a report date), plus body
-/// lines following a medical-section header until the next header or an identity
-/// exit. That second rule is what lets a bare "Laparoscopic cholecystectomy"
-/// through, since it has no keyword of its own.
-///
-/// Everything else is dropped. This is the primary barrier; [redactForCloud]
-/// scrubs the survivors as layer two.
+/// Keep only medical lines and body text.
 String keepMedicalLines(String ocr, {String? title}) {
   if (ocr.trim().isEmpty) return ocr;
   final t = title?.trim() ?? '';
@@ -956,8 +834,6 @@ String keepMedicalLines(String ocr, {String? title}) {
   return kept.join('\n');
 }
 
-/// The cloud-bound transform for scan OCR: keep only medical lines, then scrub
-/// any identifiers that survived. Two layers, applied only when the cloud engine
-/// is active (on-device never calls this).
+/// Cloud OCR transform.
 String medicalCloudText(String ocr, {String? title}) =>
     redactForCloud(keepMedicalLines(ocr, title: title));
