@@ -8,7 +8,7 @@ import '../../app/theme/app_colors.dart';
 class PrivacyPolicyScreen extends StatelessWidget {
   const PrivacyPolicyScreen({super.key});
 
-  static const effectiveDate = 'July 17, 2026';
+  static const effectiveDate = 'August 2, 2026';
 
   @override
   Widget build(BuildContext context) {
@@ -129,10 +129,13 @@ class PrivacyPolicyScreen extends StatelessWidget {
                             'renders up to 20 pages locally, and sends the '
                             'rendered pages through the same local OCR process.',
                         'An AI model may refine a document title, type, date, or '
-                            'summary. Numeric values returned by a model are '
-                            'checked against the full local OCR before they can '
-                            'be stored. You should still review every extracted '
-                            'field before saving.',
+                            'summary, and on a lab report it may identify '
+                            'result rows the table parser missed. Labels and '
+                            'numeric values returned by a model are checked '
+                            'against the full local OCR before they can be '
+                            'stored, and a row already read from the page is '
+                            'never replaced. You should still review every '
+                            'extracted field before saving.',
                       ],
                     ),
                     _PolicySection(

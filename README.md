@@ -145,10 +145,15 @@ optional app lock. Every step can be skipped.
 
 This is the most important thing to understand about Cura.
 
-**Scanning is deterministic. No AI model reads your values.** OCR recognizes the text
+**Values are read off the page, never written by a model.** OCR recognizes the text
 on the page, and the results table is rebuilt from the *geometry* of that text, which
 number sits in which row and which column. Titles, document types and dates are
 decided by rules. Amounts on bills come from the same geometry.
+
+On a lab report where that geometry clearly came up short, an AI model gets one narrow
+job: point at the rows that were skipped. It never supplies the numbers. Every label
+and every digit it hands back has to already appear in the recognized text or the row
+is thrown away, and a row the geometry already read is never overwritten.
 
 The upside is that a value in Cura is a value literally printed on your report. It
 cannot be invented, because nothing is generating it.
@@ -189,9 +194,11 @@ and lists are answered directly from the stored fields with no model at all, whi
 why those answers are instant. The language model only runs for reasoning, summaries
 and definitions.
 
-**During scanning**, the on-device model is used for exactly one thing: on a receipt
-or bill, it may suggest a **title** and a **purpose note**. Nothing else. Lab values,
-prescriptions, dates and amounts stay fully deterministic.
+**During scanning**, the on-device model is used for two things: on a receipt or bill
+it may suggest a **title** and a **purpose note**, and on a lab report whose table
+came out short it may point at the rows that were missed. Nothing else. Prescriptions,
+dates and amounts stay fully deterministic, and every value it points at is checked
+against the recognized text first.
 
 **After saving**, it does one more thing. An imaging, discharge, visit or prescription
 summary is scraped straight off the page, section by section, so it is accurate but
@@ -252,17 +259,17 @@ numbers.
 | Visit note (typed by you) | nothing, never sent, fully deterministic |
 | Receipt or bill | title, purpose note |
 | Lab, imaging, discharge summary | type, date, title |
-| Lab report only | the results table, **and only** when the OCR geometry was ambiguous and can be reconciled |
+| Lab report only | the results table, **and only** when the OCR geometry was ambiguous or clearly missed rows, and every value can be matched back to the OCR |
 | Imaging, discharge, visit, prescription | after saving, the summary is rewritten for readability, from the scraped clinical sections only |
 
-Everything else stays deterministic: lab values, prescription contents, and bill
-amounts. The narrative summary is deterministic where it counts: the scraped text is
-stored verbatim and is what Ask searches and quotes. Only the copy you read on the
-document page is rewritten.
+Everything else stays deterministic: prescription contents and bill amounts. Lab
+values are always read off the page, never written by a model. The narrative summary
+is deterministic where it counts: the scraped text is stored verbatim and is what Ask
+searches and quotes. Only the copy you read on the document page is rewritten.
 
-Even in the rare table repair case, the answer is not trusted blindly. Every value
-that comes back is re-checked against the original OCR text before it is stored, so a
-remote model cannot invent, alter or round a measurement.
+Even in the table cases, the answer is not trusted blindly. Every value that comes
+back is re-checked against the original OCR text before it is stored, so a remote
+model cannot invent, alter or round a measurement.
 
 ### What is actually sent
 

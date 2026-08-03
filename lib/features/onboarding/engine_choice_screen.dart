@@ -96,9 +96,9 @@ class _EngineChoiceScreenState extends ConsumerState<EngineChoiceScreen> {
                         iconBackground: AppColors.canvas,
                         title: 'On-device',
                         body:
-                            'Runs entirely on your phone. Scanning is fully '
-                            'deterministic and does not use LLMs, so the values '
-                            'are copied straight off your reports. A one-time '
+                            'Runs entirely on your phone. Values are copied '
+                            'straight off your reports, never written by a '
+                            'model. A one-time '
                             'model download is required, but after that Cura '
                             'works completely offline. Nothing you scan ever '
                             'leaves the device. The scans sometimes have '
@@ -133,8 +133,9 @@ class _EngineChoiceScreenState extends ConsumerState<EngineChoiceScreen> {
                             'numbers can\'t be invented. Your API key is stored '
                             'encrypted on this device. The scans sometimes have '
                             'incorrect or missing values, so double-check '
-                            'before saving. When enabled, the cloud model only '
-                            'helps label a scan, like its title, type and date. '
+                            'before saving. When enabled, the cloud model helps '
+                            'label a scan, like its title, type and date, and '
+                            'can point out lab rows the scan missed. '
                             'Prescriptions are never sent.',
                         footnote:
                             'Needs internet. You\'re billed by your provider, '
