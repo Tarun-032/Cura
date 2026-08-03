@@ -21,6 +21,12 @@ import 'privacy_policy_screen.dart';
 import 'storage_info.dart';
 import 'storage_screen.dart';
 
+/// The installed package's version name, read once. Asking the platform keeps
+/// the About row from drifting away from pubspec on every release.
+final _appVersion = const MethodChannel(
+  'com.cura.cura/device',
+).invokeMethod<String>('getVersion');
+
 /// Settings: data controls, AI model settings,
 /// voice input, and about/privacy details. Grouped white cards with hairline
 /// row dividers.
@@ -117,10 +123,13 @@ class SettingsView extends ConsumerWidget {
                       iconColor: AppColors.secondary,
                       tileColor: AppColors.divider,
                       title: 'Version',
-                      trailing: Text(
-                        '1.0.0',
-                        style: textTheme.bodyMedium?.copyWith(
-                          color: AppColors.faint,
+                      trailing: FutureBuilder<String?>(
+                        future: _appVersion,
+                        builder: (context, snapshot) => Text(
+                          snapshot.data ?? '',
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: AppColors.faint,
+                          ),
                         ),
                       ),
                     ),

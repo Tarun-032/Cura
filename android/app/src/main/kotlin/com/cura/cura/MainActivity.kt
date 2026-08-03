@@ -25,6 +25,12 @@ class MainActivity : FlutterFragmentActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getInfo" -> result.success(deviceInfo())
+                    // Read from the installed package so the Settings row can
+                    // never drift from the version in pubspec.
+                    "getVersion" ->
+                        result.success(
+                            packageManager.getPackageInfo(packageName, 0).versionName
+                        )
                     // The only way back once notifications are permanently
                     // denied, since the OS stops showing the prompt.
                     "openNotificationSettings" -> {
