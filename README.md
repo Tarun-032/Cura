@@ -4,7 +4,7 @@
 
 # Cura
 
-**A Privacy-Focused Medical Records App**
+**A Privacy-Focused Medical History Management App**
 
 Cura scans your lab reports, prescriptions, bills and discharge summaries, reads them
 on the device, files them automatically, and lets you ask questions about your own
