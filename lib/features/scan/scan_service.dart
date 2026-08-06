@@ -978,6 +978,11 @@ class ScanService {
   /// letterhead lines. Null when the page has none of these sections.
   String? extractFindingsSummary(String text) {
     final captured = <String>[];
+    // Indices of the section headings, and of those emitted with nothing after
+    // the colon. A heading is written when it is matched, before its body is
+    // known, so the empty ones can only be recognised afterwards.
+    final headingAt = <int>{};
+    final emptyHeadingAt = <int>{};
     String? current; // the section we're inside, if it's one we want
     for (final raw in text.split('\n')) {
       var line = raw.trim();
@@ -1015,6 +1020,8 @@ class ScanService {
               .split(' ')
               .map((w) => '${w[0].toUpperCase()}${w.substring(1)}')
               .join(' ');
+          headingAt.add(captured.length);
+          if (rest.isEmpty) emptyHeadingAt.add(captured.length);
           captured.add(rest.isEmpty ? '$label:' : '$label: $rest');
         }
         continue;
@@ -1025,10 +1032,20 @@ class ScanService {
       if (current != null && _looksLikeIdentityLine(line)) continue;
       if (current != null) captured.add(line);
     }
-    if (captured.isEmpty) return null;
+    // A heading the page printed but the scan found nothing under — the next
+    // line is another heading, or there is no next line — is an artefact of
+    // reading top to bottom, not a finding. "Microscopic Description:" alone
+    // tells the reader nothing.
+    final kept = [
+      for (var i = 0; i < captured.length; i++)
+        if (!emptyHeadingAt.contains(i) ||
+            (i + 1 < captured.length && !headingAt.contains(i + 1)))
+          captured[i],
+    ];
+    if (kept.isEmpty) return null;
     // Joined per line, not into one blob: the cloud redactor works line by line
     // and cannot scrub selectively inside a single 2500-character string.
-    var summary = captured
+    var summary = kept
         .map((l) => l.replaceAll(RegExp(r'[ \t]+'), ' ').trim())
         .join('\n')
         .trim();

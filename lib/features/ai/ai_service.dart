@@ -17,9 +17,7 @@ import 'remote/remote_ai_store.dart';
 import 'remote/remote_chat_backend.dart';
 import 'retrieval.dart';
 
-/// One update from [AiService.answerQuestionStream]. [text] grows token-by-token
-/// and [done] marks the last event. [thinking] carries a reasoning model's
-/// `<think>…</think>` chain, which fills first and freezes when the answer starts.
+/// One streamed answer chunk.
 class AskChunk {
   const AskChunk(
     this.text, {
@@ -33,14 +31,13 @@ class AskChunk {
   final String thinking;
   final CuraDocument? source;
 
-  /// Source cards for a multi-match answer, newest first. Empty when [source]
-  /// carries the single match. [sourceTotal] drives the "+N more" affordance.
+  /// Source cards for multi-match answers.
   final List<CuraDocument> sources;
   final int sourceTotal;
   final bool done;
 }
 
-/// Result of splitting the raw model output into its reasoning and answer parts.
+/// Split model output into thinking and answer.
 class _ParsedAnswer {
   const _ParsedAnswer(this.thinking, this.answer);
   final String thinking;
@@ -49,23 +46,20 @@ class _ParsedAnswer {
 
 enum ScanExtractionMode { metadata, receipt, tableRepair, labRows }
 
-/// Raw output of one summary rewrite. [preempted] separates "the user asked a
-/// question and took the model back" from a real failure, so the queue can
-/// retry it later without burning its one retry.
+/// One summary rewrite result.
 class SummaryRewrite {
   const SummaryRewrite(this.text, {this.preempted = false});
   final String? text;
   final bool preempted;
 }
 
-/// Stops a streaming backend: `stop()` locally, `close()` on the cloud client.
-/// Attaching after a cancel fires at once, covering a stop during model load.
+/// Cancel a streaming backend.
 class GenerationCancellation {
   bool cancelled = false;
   void Function()? _stop;
   final _done = Completer<void>();
 
-  /// Completes on [cancel]. See [untilCancelled].
+  /// Completes on cancel.
   Future<void> get done => _done.future;
 
   void attach(void Function() stop) {
@@ -83,8 +77,7 @@ class GenerationCancellation {
   }
 }
 
-/// Ends [source] on cancel: `LlamaController.stop()` leaves its token stream
-/// open, so waiting for the backend to close it hangs forever.
+/// Stop a stream when cancelled.
 Stream<T> untilCancelled<T>(
   Stream<T> source,
   GenerationCancellation? cancellation,
@@ -105,10 +98,7 @@ Stream<T> untilCancelled<T>(
   return out.stream;
 }
 
-/// Runs the model for Ask and for optional background refinement of a fresh scan
-/// ([startDocumentRefinement]). Scans are filled deterministically first; the
-/// model only fills declared gaps, and every repaired number is tied to an OCR
-/// cell. The model loads once and stays warm; each request gets a fresh chat.
+/// Run Ask and scan refinement.
 class AiService {
   AiService(
     this._manager,
@@ -125,23 +115,20 @@ class AiService {
   AiModel? _spec;
   int _layers = 0;
 
-  // What sits in the warm KV cache, so a follow-up appends only its new turn.
-  // Kept in lock-step with the native cache; any mismatch forces a rebuild.
+  // Warm KV cache state.
   String? _kvSystem; // system prompt at the cache base (null = empty/dirty)
   String?
   _kvConvId; // chat/session id whose turns sit on top (null = base only)
   bool _kvOpenAnswer = false; // cache ends mid-answer (needs a close next turn)
   int _kvTokensEst = 0; // running token estimate, for the overflow guard
 
-  /// Minimum answer room (tokens) to keep free before we'll reuse the cache
-  /// rather than rebuild — so prompt + answer never overflow the window.
+  /// Free tokens to keep before reusing cache.
   static const _kAnswerHeadroom = 128;
 
-  /// ~3.5 chars/token is a safe overestimate for English (errs toward headroom).
+  /// Token estimate from text length.
   int _estTokens(String s) => (s.length / 3.5).ceil();
 
-  /// Clears the native KV cache AND resets the tracker together — the single
-  /// choke point that keeps the two in sync. Resilient: never throws.
+  /// Clear the KV cache and tracker.
   Future<void> _clearKv() async {
     try {
       await _ctrl?.clearContext();
@@ -152,25 +139,20 @@ class AiService {
     _kvTokensEst = 0;
   }
 
-  /// Halts llama.cpp. Cancelling the Dart subscription alone would not.
+  /// Stop llama.cpp.
   void _stopLocal() {
     final ctrl = _ctrl;
     if (ctrl != null) unawaited(ctrl.stop());
   }
 
-  /// Drops the warm cache. Ask calls this after editing a question, since the
-  /// cache still holds the turn that was removed.
+  /// Drop the warm cache.
   Future<void> resetConversationCache() => _clearKv();
 
-  // The background summary rewrite, if one is running. There is one native
-  // context, so a user waiting on an answer takes it back.
+  // Background rewrite state.
   GenerationCancellation? _background;
   Future<void>? _backgroundDone;
 
-  /// Takes the model back from a background rewrite, and waits for it to
-  /// actually let go. Stopping is asynchronous: without the wait its `stop()`
-  /// and its cache clear can land after the next request has started and kill
-  /// it instead. [untilCancelled] bounds how long that wait can be.
+  /// Preempt a background rewrite.
   Future<void> _preemptBackground() async {
     _background?.cancel();
     _background = null;
@@ -179,12 +161,10 @@ class AiService {
     if (done != null) await done;
   }
 
-  /// Answer ceiling for the cloud engine. No small context window to clamp
-  /// against, and the provider still stops at the model's end-of-turn token.
+  /// Cloud answer ceiling.
   static const _remoteMaxTokens = 1024;
 
-  // On-device system prompt. Lean on purpose: prefill cost scales with prompt
-  // length on a phone CPU. The cloud model gets the fuller [_systemPromptRemote].
+  // On-device system prompt.
   static const _systemPrompt =
       'You are Cura, the user\'s on-device medical assistant. Answer briefly, in '
       'plain language, and only about health or the documents below — for anything '
@@ -196,9 +176,7 @@ class AiService {
       'self-harm, violence, or drug misuse. You explain, not diagnose; this is '
       'not medical advice.';
 
-  // Cloud system prompt: fuller than the local one, since prefill cost is a
-  // non-issue over the network. FORMATTING matches the app's small Markdown
-  // renderer (bold, "### ", "- " bullets, no tables) — see ask_screen.
+  // Cloud system prompt.
   static const _systemPromptRemote =
       'You are Cura — a warm, precise medical assistant that helps the user '
       'understand their own health records. You organize and explain; you do not '
@@ -227,7 +205,9 @@ class AiService {
       'report can be relevant through its findings even when its title does not '
       'name the topic — weigh each record\'s title and any supplied details. If '
       'you can only see titles and cannot confirm a report\'s contents, count what '
-      'clearly matches and say the total may be approximate rather than guessing.\n\n'
+      'clearly matches and say the total may be approximate rather than guessing. '
+      'A "Verified count" line, when supplied, was counted from the records on '
+      'the device: use that number exactly and do not recount it.\n\n'
       'CONSISTENCY: Your answers must be stable and evidence-based. If the user '
       'pushes back ("are you sure?", "that seems wrong"), re-check the Complete '
       'record inventory carefully before replying. If it confirms your answer, say '
@@ -259,15 +239,13 @@ class AiService {
       'self-harm, respond with empathy and urge them to contact a doctor or a '
       'local crisis line right away.';
 
-  // Appended when the user has no saved documents, so the model says so itself.
+  // No-docs note.
   static const _noDocsNote =
       ' No documents are saved yet. If asked about their records, say there are '
       'none yet and to add a report and ask again; otherwise answer the health '
       'question normally.';
 
-  /// Note appended when the user asks about a document they don't have on file,
-  /// so the model says so instead of describing an unrelated one. [label] is the
-  /// missing document's human name (from Grounding.missingLabel).
+  /// Note for a missing document type.
   static const _kNoThinkPrefill = '<think>\n\n</think>\n\n';
 
   static String _missingTypeNote(String label) =>
@@ -275,9 +253,7 @@ class AiService {
       'document is in their records. Tell them it isn\'t on file; do not answer '
       'from an unrelated document.';
 
-  /// Note appended when several real candidate reports are attached and the model
-  /// must resolve which one the user means (GroundingKind.focusResolve). It can
-  /// only pick among them, never merge them or call one "missing".
+  /// Note for focus resolution.
   static const _focusResolveNote =
       ' Note: several of the user\'s reports are shown below and ALL of them exist '
       'on file. Using the conversation so far, work out which single report they '
@@ -285,17 +261,14 @@ class AiService {
       'that one, naming its title and date. Never say any of the shown reports is '
       'missing or an error. If it is genuinely unclear, briefly ask which one.';
 
-  /// A collection request is deliberately different from focus resolution: the
-  /// user asked for several reports, so choosing one would silently omit data.
+  /// Note for collection requests.
   static const _collectionNote =
       ' Note: the user requested the reports shown below as a group. Cover EVERY '
       'shown report and use the supplied details for each one. Keep their dates '
       'and contents distinct. Do not choose only one, and do not say a shown '
       'report\'s details are unavailable.';
 
-  /// Note naming the same-kind reports that were not attached
-  /// ([Grounding.otherReports]), so the model doesn't call a sibling it half
-  /// remembers from the chat "missing" or "an error".
+  /// Note for other same-kind reports.
   static String _otherReportsNote(List<CuraDocument> others) {
     final items = others
         .map((d) => '"${d.title}" (${d.dateLabel})')
@@ -306,9 +279,7 @@ class AiService {
         'is missing, unavailable, or an error; you may offer to explain the others.';
   }
 
-  /// Infers which candidate a [GroundingKind.focusResolve] answer explained, for
-  /// the source card only. Scores each candidate on how much of its title/date the
-  /// answer echoes and needs a clear match (≥2); returns null when unsure.
+  /// Infer the source from a focus answer.
   static CuraDocument? _sourceFromAnswer(
     String answer,
     List<CuraDocument> candidates,
@@ -332,26 +303,14 @@ class AiService {
     return bestScore >= 2 ? best : null;
   }
 
-  /// "a, b and c" — a natural list join.
+  /// Join a list naturally.
   static String _naturalList(List<String> items) {
     if (items.length <= 1) return items.join();
     if (items.length == 2) return '${items[0]} and ${items[1]}';
     return '${items.sublist(0, items.length - 1).join(', ')} and ${items.last}';
   }
 
-  /// Answers [question] grounded in [docs], streaming the reply token-by-token.
-  /// Source is chosen by retrieval (the best-matching document), not the model,
-  /// so it's known before generation and carried on every chunk. Reuses the warm
-  /// model. Emits a single graceful chunk on empty input or any failure.
-  ///
-  /// The router computes exact factual/value/date/list answers locally. In local
-  /// mode a tiny buffered model pass rewrites that verified answer naturally; an
-  /// invalid rewrite falls back to the exact text. Cloud bypasses the router.
-  ///
-  /// [history] is the prior conversation (oldest→newest), giving the session
-  /// memory for follow-ups. Only a bounded slice is used — see [_boundedHistory].
-  ///
-  /// [cancellation] stops the answer mid-flight; the partial still arrives.
+  /// Answer a grounded question as a stream.
   Stream<AskChunk> answerQuestionStream(
     String question,
     List<CuraDocument> docs, {
@@ -369,11 +328,10 @@ class AiService {
       return;
     }
 
-    // Which engine answers: the opt-in cloud model, or the on-device one.
+    // Pick the engine.
     final useRemote = await _remote.remoteActive();
 
-    // The router exists to make tiny on-device models fast and exact. A cloud
-    // model handles every turn itself, so it skips the router entirely.
+    // Route only on-device answers.
     RoutedAnswer? routed;
     if (shouldUseQueryRouter(cloudActive: useRemote)) {
       routed = routeQuestion(q, docs);
@@ -385,8 +343,14 @@ class AiService {
       }
     }
 
-    // A model is needed from here on. The cloud engine needs no local download;
-    // the local one does, so say that plainly rather than failing generically.
+    // Compute counts locally.
+    final counted = useRemote ? routeQuestion(q, docs) : null;
+    final verifiedCount =
+        counted != null && counted.kind == RoutedAnswerKind.count
+        ? counted.text
+        : null;
+
+    // Require a local model when needed.
     if (!useRemote && await _manager.installedModel() == null) {
       if (routed != null) {
         yield AskChunk(
@@ -406,9 +370,7 @@ class AiService {
       return;
     }
 
-    // Shared prompt shaping, engine-independent: [groundingFor] decides which
-    // document (if any) grounds this question, and flags a named type that isn't
-    // on file so the model says so rather than using an unrelated document.
+    // Build grounding.
     final g = routed == null
         ? groundingFor(
             q,
@@ -419,8 +381,7 @@ class AiService {
           )
         : const Grounding(GroundingKind.none);
 
-    // Grounding trace: kind, cited source, focus context and candidates, so a
-    // wrong pick is diagnosable from one logcat line.
+    // Log grounding.
     if (routed == null) {
       debugPrint(
         '[Cura.ai] grounding kind=${g.kind.name} '
@@ -434,14 +395,12 @@ class AiService {
 
     final contextDocs = g.contextDocs;
     final source = routed?.source ?? g.source;
-    // focusResolve lets the model pick among the attached reports, so the cited
-    // source is inferred from the finished answer. Empty on every other path.
+    // Focus resolve uses the answer.
     final resolveCandidates = g.kind == GroundingKind.focusResolve
         ? contextDocs
         : const <CuraDocument>[];
 
-    // Cloud gets minimized context: structured fields plus an allowlisted medical
-    // excerpt, then [redactForCloud]. On-device sends a fuller OCR excerpt.
+    // Cloud gets minimized context.
     const privacyGate = CloudPrivacyGate();
     final cloudIdentityTerms = useRemote
         ? privacyGate.identityTermsForDocuments(docs)
@@ -451,8 +410,7 @@ class AiService {
         : (useRemote
               ? privacyGate.buildContext(contextDocs).text
               : buildContext(contextDocs));
-    // A cloud record question also gets the safe inventory, for the global view
-    // needed to count and compare. Both sections go through the PII scrubber.
+    // Cloud questions also get the inventory.
     final inventory = useRemote && g.kind != GroundingKind.none
         ? privacyGate.buildInventory(docs).text
         : '';
@@ -467,6 +425,7 @@ class AiService {
               'removed identifying details were essential, ask the user to rephrase '
               'without them.';
     final contextParts = <String>[
+      if (verifiedCount != null) 'Verified count: $verifiedCount',
       if (inventory.isNotEmpty) inventory,
       if (detailedContext.isNotEmpty)
         'Relevant report details:\n$detailedContext',
@@ -476,11 +435,9 @@ class AiService {
         : contextParts.isEmpty
         ? remoteQuestion
         : '${contextParts.join('\n\n')}\n\nQuestion: $remoteQuestion';
-    // Different brief per engine: cloud takes the fuller scope/safety prompt,
-    // on-device stays lean for prefill speed.
+    // Use the right prompt per engine.
     final enginePrompt = useRemote ? _systemPromptRemote : _systemPrompt;
-    // One note per grounding case: no documents, a kind that isn't on file,
-    // several reports to resolve, or unattached same-kind siblings to name.
+    // Add the grounding note.
     final basePrompt = docs.isEmpty
         ? '$enginePrompt$_noDocsNote'
         : g.missingLabel != null
@@ -492,8 +449,7 @@ class AiService {
         : !useRemote && g.otherReports.isNotEmpty
         ? '$enginePrompt${_otherReportsNote(g.otherReports)}'
         : enginePrompt;
-    // Session memory: a bounded text-only slice of prior turns, with documents
-    // never re-attached. Widened only for summary/recall questions.
+    // Add bounded history.
     final wantsRecall = routed == null && _recallRe.hasMatch(q.toLowerCase());
     final priorTurns = _boundedHistory(
       history,
@@ -509,8 +465,7 @@ class AiService {
     if (useRemote) {
       final safePriorTurns = <({String role, String text})>[];
       for (final turn in priorTurns) {
-        // Assistant turns can quote report text, so they take the middle policy.
-        // Re-applied in _answerRemote; both policies are idempotent.
+        // Assistant turns use the middle policy.
         final safeText =
             (turn.role == 'assistant'
                     ? privacyGate.assistantMessage(
@@ -527,16 +482,17 @@ class AiService {
           safePriorTurns.add((role: turn.role, text: safeText));
         }
       }
-      // Exact type/modality/date collections carry their local set. Free-form
-      // topical ones ("TB-related", "kidney") instead map the exact titles the
-      // answer printed back to local documents, inside _answerRemote.
+      // Collection routes carry their local set.
       final cardRoute = routeQuestion(q, docs);
       final isCollectionRoute =
           cardRoute?.kind == RoutedAnswerKind.count ||
           cardRoute?.kind == RoutedAnswerKind.list;
       final routeCardsAreAuthoritative =
           isCollectionRoute && cardRoute!.sourcesAreAuthoritative;
-      final groundedCollectionSources = g.kind == GroundingKind.collection
+      // Attach every matching source.
+      final groundedCollectionSources =
+          g.kind == GroundingKind.collection ||
+              (g.kind == GroundingKind.grounded && contextDocs.length > 1)
           ? contextDocs
           : const <CuraDocument>[];
       final cardSources = routeCardsAreAuthoritative
@@ -572,17 +528,13 @@ class AiService {
       await _ensureLoaded();
       final loadMs = sw.elapsedMilliseconds;
 
-      // Reasoning models answer without thinking unless "Think harder" is on.
-      // Thinking is disabled by prefilling a closed `<think></think>` after the
-      // assistant marker (see _kNoThinkPrefill): Qwen3 ignores the /no_think text
-      // switch but cannot reason past an already-closed block.
+      // Disable thinking unless requested.
       final thinkMode =
           routed == null && _spec!.canThink && await _manager.thinkHarder();
       final systemContent = basePrompt;
       final noThink = _spec!.canThink && !thinkMode;
 
-      // KV reuse applies only to the plain ChatML fast path; "Think harder" and
-      // non-chatml models take the full-rebuild path.
+      // Reuse KV only on the fast path.
       if (_spec!.template != 'chatml' || thinkMode) {
         yield* _answerLocalFresh(
           systemContent,

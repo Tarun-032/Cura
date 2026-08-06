@@ -18,9 +18,7 @@ import 'scan_extraction.dart';
 import 'scan_service.dart';
 import 'summary_rewriter.dart';
 
-/// Confirm-before-save screen. Shown after a scan with everything pre-filled and
-/// editable; also reused to edit an existing document.
-/// Returns the resulting [CuraDocument] via `Navigator.pop`, or null if dismissed.
+/// Confirm-before-save screen.
 class ReviewDocumentScreen extends ConsumerStatefulWidget {
   const ReviewDocumentScreen({
     super.key,
@@ -50,19 +48,17 @@ class ReviewDocumentScreen extends ConsumerStatefulWidget {
       _ReviewDocumentScreenState();
 }
 
-/// Height ceiling for any card holding unbounded document text. Past this they
-/// scroll inside themselves, so no document pushes the actions out of reach.
+/// Height cap for text cards.
 const double kDocumentTextCapHeight = 260;
 
 class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
   late final TextEditingController _titleController;
   late final TextEditingController _textController;
   late final TextEditingController _noteController;
-  // Each Scrollbar and its scrollable must share a controller or the bar can't
-  // track. One controller covers both Summary variants, which are exclusive.
+  // Shared scrollbar controller.
   final ScrollController _textScrollController = ScrollController();
   final ScrollController _summaryScrollController = ScrollController();
-  // Anchors the rewrite popup under the icon it belongs to.
+  // Anchor the rewrite popup.
   final GlobalKey _rewriteHintKey = GlobalKey();
   late DocumentType _type;
   late DateTime _date;
@@ -72,8 +68,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
   String? _resultsNote;
   bool _busy = false;
 
-  // Background refinement state. Field targets power truthful inline statuses;
-  // the generation id prevents a cancelled scan from patching a replacement.
+  // Background refinement state.
   bool _patching = false;
   bool _saved = false;
   bool _titleTouched = false;
@@ -89,9 +84,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
 
   bool get _summaryShaped => isSummaryDocument(_type, _textController.text);
 
-  /// True when the breakdown has at least one real purchased item (not just
-  /// summary/total rows) — flips the note hint from "name the reason" to
-  /// "optional".
+  /// True when the breakdown has item rows.
   bool get _hasItemRows => _resultRows.any(
     (r) => r.label.isNotEmpty && !isReceiptSummaryLabel(r.label),
   );
@@ -108,8 +101,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
     _resultRows = [];
     _seedResultRows(widget.draft.results);
     _resultsNote = widget.draft.resultsNote;
-    // Receipt purpose / prescription Summary controller. It mirrors
-    // [_resultsNote] so refinement prefill and re-scan resets stay in sync.
+    // Mirror the summary note.
     _noteController = TextEditingController(text: _resultsNote ?? '');
     _noteController.addListener(() {
       _resultsNote = _noteController.text;
@@ -119,8 +111,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       }
     });
 
-    // Any user keystroke in the title marks it as touched (guarded so our own
-    // refinement write doesn't count as an edit).
+    // Mark title edits.
     _titleController.addListener(() {
       if (!_patching) {
         if (!_titleTouched) setState(() => _titleTouched = true);
@@ -238,8 +229,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       _refinementPending = false;
       _patching = true;
       final refinedTitle = ext.title?.trim();
-      // A grounded model title can improve any bill, but a bare "Bill" never
-      // does, so the deterministic vendor title stays in that case.
+      // Keep generic bill titles out.
       final genericRefinedBillTitle =
           _type == DocumentType.receipt &&
           refinedTitle != null &&
@@ -328,7 +318,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
     super.dispose();
   }
 
-  /// The current edited results, dropping rows the user blanked out entirely.
+  /// Current edited results.
   List<DocumentResult> _collectResults() => [
     for (final r in _resultRows)
       if (r.label.isNotEmpty || r.value.isNotEmpty)
@@ -449,8 +439,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       final result = await onRescan();
       if (result != null && mounted) {
         final svc = ref.read(scanServiceProvider);
-        // The old source remains usable if selection/OCR is cancelled or fails.
-        // Once the replacement is complete, release its provisional files.
+        // Release the old source after replace.
         if (_sourcePdfPath != null) {
           await ref
               .read(pdfImportServiceProvider)
@@ -460,8 +449,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
         }
         final detectedType = svc.detectType(result.text);
         final summaryShaped = isSummaryDocument(detectedType, result.text);
-        // Prescriptions extract deterministically. A receipt purpose stays empty
-        // until supplied; every other type keeps its findings/count note.
+        // Handle prescriptions and receipts separately.
         final rx = detectedType == DocumentType.prescription
             ? svc.parsePrescription(result.text)
             : null;
@@ -490,8 +478,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                 ? const []
                 : result.results,
           );
-          // A re-scan is a new source document, so refinement may replace every
-          // automatically derived field again.
+          // Re-scan resets refinement.
           _titleTouched = false;
           _typeTouched = false;
           _dateTouched = false;
@@ -499,8 +486,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
           _noteTouched = false;
         });
 
-        // Start the replacement's compact job without keeping the page-preview
-        // overlay up. Its exact fields now report their own progress.
+        // Start the new refinement job.
         final useRemote = await ref.read(remoteAiStoreProvider).remoteActive();
         final job = ref
             .read(aiServiceProvider)
@@ -529,7 +515,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       );
   }
 
-  /// The read-only findings block, empty when there is nothing to show.
+  /// Read-only findings block.
   List<Widget> _findingsSection(TextTheme textTheme) {
     final note = _resultsNote?.trim();
     if (note == null || note.isEmpty) return const [];
@@ -864,7 +850,9 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
                               )) ...[
                                 const SizedBox(width: 10),
                                 const WorkingLabel(
-                                  key: ValueKey('receipt-note-refinement-status'),
+                                  key: ValueKey(
+                                    'receipt-note-refinement-status',
+                                  ),
                                   text: 'Writing bill note…',
                                 ),
                               ],
@@ -947,7 +935,11 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
   /// record shows no hint: its rewrite has already happened.
   Widget _summaryLabel() {
     if (widget.isEditing ||
-        !needsSummaryRewrite(type: _type, note: _resultsNote)) {
+        !needsSummaryRewrite(
+          type: _type,
+          extractedText: _textController.text,
+          note: _resultsNote,
+        )) {
       return _label('Summary');
     }
     final remote = ref.watch(activeEngineProvider).value?.isRemote ?? false;
@@ -1066,10 +1058,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
       children: [
         _label(text),
         const Spacer(),
-        if (pending)
-          WorkingLabel(text: pendingText)
-        else
-          idleTrailing!,
+        if (pending) WorkingLabel(text: pendingText) else idleTrailing!,
       ],
     );
   }

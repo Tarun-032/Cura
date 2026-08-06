@@ -1,4 +1,4 @@
-// Tests for the deterministic scan helpers: title, type and summary, no model.
+// Scan helper tests.
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -57,9 +57,7 @@ MEDICAL LABORATORY REPORT
           'COMPUTERISED PATHOLOGY LABORATORY\n'
           'TEST DONE   OBSERVED VALUE   NORMAL RANGE\n';
       final title = svc.detectTitle(text);
-      // No panel name and no department banner in this input, so the honest
-      // deterministic fallback is the generic label — never the header row or
-      // the clinic letterhead (the two things this test really guards).
+      // Keep the generic fallback.
       expect(title, 'Lab report');
       expect(title.toLowerCase(), isNot(contains('observed value')));
       expect(title.toLowerCase(), isNot(contains('quinn')));
@@ -74,7 +72,7 @@ MEDICAL LABORATORY REPORT
     });
 
     test('does not title from a panel name mentioned inside a paragraph', () {
-      // "blood sugar" inside the protocol prose must not become the title.
+      // Keep prose out of titles.
       const text =
           'Contrast Enhanced 18F-FDG Whole Body PET-CT Scan\n'
           'The fasting blood sugar level at the time of injection was 89 mg/dl.\n';
@@ -93,9 +91,7 @@ MEDICAL LABORATORY REPORT
     );
 
     test('repairs an OCR digit-for-letter slip in the panel name (blo0d)', () {
-      // OCR occasionally reads the "o" in "Blood" as a "0". Without repair the
-      // panel lookup misses and the corrupted line "Complete Blo0d Count"
-      // becomes the title. A "0" wedged between two letters is restored to "o".
+      // Fix 0 for o.
       const text = '''
 Complete Blo0d Count
 Investigation Observed Value Unit Biological Reference Interval
@@ -113,7 +109,7 @@ Haemoglobin 13.0 g/dL 14-18
     });
 
     test('rejects a report-status line that reads like a heading', () {
-      // All caps and says "report", so every shape check passes.
+      // All caps still needs a fallback.
       const text =
           'MICROBIOLOGY\n'
           'TEST NAME   RESULT\n'
@@ -232,6 +228,36 @@ Reprinted On: 01/07/2025 4:44 PM
   });
 
   group('extractFindingsSummary', () {
+    test('a heading with nothing under it is dropped', () {
+      // Drop empty headings.
+      const text =
+          'Specimen: Sinus from cold abscess.\n'
+          'Microscopic Description:\n'
+          "Impression: Necrotizing granulomatous inflammation of likely Koch's "
+          'etiology.\n';
+      final summary = svc.extractFindingsSummary(text)!;
+      expect(summary, isNot(contains('Microscopic Description:')));
+      expect(summary, contains('Sinus from cold abscess'));
+      expect(summary, contains('granulomatous inflammation'));
+    });
+
+    test('a heading that does have a body survives', () {
+      const text =
+          'Microscopic Description:\n'
+          'Inflamed sinus tract with epithelioid granulomas.\n';
+      final summary = svc.extractFindingsSummary(text)!;
+      expect(summary, contains('Microscopic Description:'));
+      expect(summary, contains('epithelioid granulomas'));
+    });
+
+    test('a trailing empty heading is dropped', () {
+      const text =
+          'Impression: Benign.\n'
+          'Comments:\n';
+      final summary = svc.extractFindingsSummary(text)!;
+      expect(summary, 'Impression: Benign.');
+    });
+
     test('captures Indication + Findings, skips Protocol methodology', () {
       const text =
           'Contrast Enhanced 18F-FDG Whole Body PET-CT Scan\n'
@@ -244,7 +270,7 @@ Reprinted On: 01/07/2025 4:44 PM
       final summary = svc.extractFindingsSummary(text)!;
       expect(summary, contains('Case of PUO under evaluation'));
       expect(summary, contains('supraclavicular nodes'));
-      // The fasting-sugar methodology from Protocol must NOT be in the summary.
+      // Keep protocol details out.
       expect(summary, isNot(contains('89')));
       expect(summary, isNot(contains('overnight fasting')));
     });
@@ -457,10 +483,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
 
     test('a lab report with a stray Bill No line stays lab', () {
-      expect(
-        svc.detectType('Bill No: 1234\n$lftText'),
-        DocumentType.lab,
-      );
+      expect(svc.detectType('Bill No: 1234\n$lftText'), DocumentType.lab);
     });
   });
 

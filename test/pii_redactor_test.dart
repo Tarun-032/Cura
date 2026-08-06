@@ -1,7 +1,5 @@
-// Tests for the cloud-only PII barrier: a realistic letterhead and patient block
-// must be stripped while the medical content survives, and the tricky medical
-// lines that must not be mistaken for PII (platelet 150000, "Sex Hormone…", ECG
-// "block") stay intact.
+// Cloud PII barrier tests.
+// Keep medical text; drop identity.
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -66,7 +64,7 @@ NET : 1956.00
       expect(safe, isNot(contains('9000000000')));
       expect(safe, isNot(contains('FAIRVIEW')));
       expect(safe, isNot(contains('ANM1.0000000000')));
-      // The vendor stays on the phone too — the deterministic title has it.
+      // Keep the vendor out.
       expect(safe, isNot(contains('Meadowlark')));
     });
 
@@ -74,9 +72,9 @@ NET : 1956.00
       const gate = CloudPrivacyGate();
       final medical = gate.scanText(bill, type: DocumentType.lab).text;
       final asBill = gate.scanText(bill, type: DocumentType.receipt).text;
-      // The medical allowlist starves the payload of the consultation fee…
+      // Medical path drops the fee.
       expect(medical, isNot(contains('OP Consultation - First Visit')));
-      // …the bill path keeps it, still without identity.
+      // Bill path keeps it, without identity.
       expect(asBill, contains('OP Consultation'));
       expect(asBill, isNot(contains('PETER')));
     });
@@ -180,9 +178,7 @@ Get Well Soon   NET : 1956.00
     });
   });
 
-  // The allowlist barrier: only medical lines survive, so identity that the
-  // keyword denylist can't know about (unlisted city, keyword-less address, a
-  // bare name) is dropped simply because it carries no medical signal.
+  // Allowlist test.
   group('medicalCloudText (allowlist minimization)', () {
     const report = '''
 A. B. NORTHGATE NATIONAL HOSPITAL
@@ -227,8 +223,7 @@ This Report is electronically Signed.
     });
   });
 
-  // Cloud Ask context must carry no letterhead OCR. A summary-only doc still
-  // gets an allowlisted medical excerpt, then redactForCloud on the whole block.
+  // Cloud Ask context test.
   group('buildContext includeRawText', () {
     final doc = CuraDocument(
       id: 'd1',
@@ -334,8 +329,7 @@ This Report is electronically Signed.
     });
 
     test('structured header keeps a receipt vendor title verbatim', () {
-      // The second redaction pass must not re-canonicalize a title the gate
-      // already approved just because it contains a document-kind word.
+      // Keep approved titles intact.
       final safe = redactForCloud(
         '[1] Fenwick Medical Stores invoice — Receipt — Jan 21, 2026',
       );
@@ -352,9 +346,7 @@ This Report is electronically Signed.
     });
   });
 
-  // Discharge summaries: Diagnosis/Procedure bodies are unlabeled prose. The
-  // allowlist must keep them (section-aware), and redactForCloud must not kill
-  // Hospital course / "Patient was advised…" as org/identity whole-line drops.
+  // Discharge summary test.
   group('discharge medicalCloudText', () {
     const discharge = '''
 CITY CARE HOSPITAL
@@ -447,7 +439,7 @@ Reviewed by Dr. Grace Quinn
 
       final context = gate.buildContext([doc]).text;
       expect(context, contains('No focal lesion'));
-      // The note covers the medical content, so the page text is not repeated.
+      // Note already covers it.
       expect(context, isNot(contains('Text:')));
       expect(context, isNot(contains('Amber Brown')));
       expect(context, isNot(contains('LH-1234')));
@@ -618,7 +610,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
         type: DocumentType.lab,
         date: DateTime(2025, 4, 2),
         results: const [DocumentResult('Hemoglobin', '13 g/dL')],
-        // A note that is mostly non-clinical words → block dropped, results kept.
+        // Block drops, results stay.
         resultsNote:
             'Zqwx frobble wibble snarf blorp quix vunk trundle grelp mibbo.',
       );
@@ -674,8 +666,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
 
     test('uncommon medical titles pass verbatim (no allowlist needed)', () {
-      // None of these words are in any curated list; they carry no identity, so
-      // the identity-detection gate lets them through unchanged.
+      // No identity here.
       for (final title in [
         'TB Pyrosequencing XDR',
         'C-Reactive Protein',
@@ -711,8 +702,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
 
     test('receipt vendor title is canonicalized, never sent', () {
-      // Where a patient shops is correlatable health information, so a vendor
-      // name is treated as identity even though the user opted into cloud.
+      // Vendor names count as identity.
       final doc = CuraDocument(
         id: 'fenwick',
         title: 'Fenwick Medical Stores invoice',
@@ -745,29 +735,62 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       expect(gate.safeTitle(doc), 'Receipt');
     });
 
-    test('inventory line carries a scrubbed findings hint for topical queries', () {
-      final histo = CuraDocument(
-        id: 'histo',
-        title: 'Histopathology',
+    test(
+      'inventory line carries a scrubbed findings hint for topical queries',
+      () {
+        final histo = CuraDocument(
+          id: 'histo',
+          title: 'Histopathology',
+          type: DocumentType.lab,
+          date: DateTime(2025, 2, 19),
+          resultsNote:
+              'Impression: Necrotizing granulomatous inflammation of likely '
+              "Koch's etiology.",
+        );
+        final xpert = CuraDocument(
+          id: 'xpert',
+          title: 'Xpert MTB/RIF',
+          type: DocumentType.lab,
+          date: DateTime(2025, 2, 18),
+          results: const [DocumentResult('MTB Complex', 'Detected')],
+        );
+
+        final inventory = gate.buildInventory([histo, xpert]).text;
+        // Topic comes from the hint.
+        expect(inventory, contains('granulomatous inflammation'));
+        expect(inventory, contains('MTB Complex: Detected'));
+      },
+    );
+
+    test('a lab hint carries its values, not its result count', () {
+      final doc = CuraDocument(
+        id: 'afb',
+        title: 'AFB Culture',
         type: DocumentType.lab,
-        date: DateTime(2025, 2, 19),
-        resultsNote:
-            'Impression: Necrotizing granulomatous inflammation of likely '
-            "Koch's etiology.",
-      );
-      final xpert = CuraDocument(
-        id: 'xpert',
-        title: 'Xpert MTB/RIF',
-        type: DocumentType.lab,
-        date: DateTime(2025, 2, 18),
-        results: const [DocumentResult('MTB Complex', 'Detected')],
+        date: DateTime(2024, 9, 3),
+        results: const [
+          DocumentResult('Acid Fast Stain', 'No AFB seen'),
+          DocumentResult('AFB Culture', 'No Mycobacterium species isolated'),
+        ],
+        // Keep the note, not the row count.
+        resultsNote: '2 results',
       );
 
-      final inventory = gate.buildInventory([histo, xpert]).text;
-      // "How many TB-related reports" needs the topic, which lives in the
-      // findings hint riding each inventory line, not in the title.
-      expect(inventory, contains('granulomatous inflammation'));
-      expect(inventory, contains('MTB Complex: Detected'));
+      final inventory = gate.buildInventory([doc]).text;
+      expect(inventory, contains('Acid Fast Stain: No AFB seen'));
+      expect(inventory, contains('No Mycobacterium species isolated'));
+      expect(inventory, isNot(contains('2 results')));
+    });
+
+    test('a report with no rows still shows its note', () {
+      final doc = CuraDocument(
+        id: 'histo-note',
+        title: 'Histopathology',
+        type: DocumentType.lab,
+        date: DateTime(2020, 2, 19),
+        resultsNote: 'Impression: Inflamed sinus tract.',
+      );
+      expect(gate.buildInventory([doc]).text, contains('Inflamed sinus tract'));
     });
 
     test('inventory findings hint still drops embedded identifiers', () {
@@ -796,11 +819,10 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
           'Your MRN is LH-99215.',
         );
         expect(msg.role, 'assistant');
-        // Benign clinical/conversational prose survives (org/identity *words*
-        // like "doctor"/"hospital" are not whole-line-dropped here).
+        // Benign prose survives.
         expect(msg.content, contains('haemoglobin is 13'));
         expect(msg.content, contains('Ask your doctor'));
-        // Names and labelled identifiers are removed.
+        // Names and IDs are removed.
         expect(msg.content, isNot(contains('Grace')));
         expect(msg.content, isNot(contains('Quinn')));
         expect(msg.content, isNot(contains('LH-99215')));
@@ -818,7 +840,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
         deleteNameRuns('R. Quinn examined the patient').text,
         isNot(contains('Quinn')),
       );
-      // A single Title-case unknown token is a possible rare term — kept.
+      // Single title-case tokens stay.
       expect(
         deleteNameRuns('Hepatitis B surface antigen').text,
         contains('Hepatitis B surface antigen'),
@@ -826,18 +848,14 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
 
     test('a first-person contraction never starts a name run', () {
-      // "I'm" is Title-case shaped, so it used to pair with the next word and
-      // take it along: the cloud greeting arrived as ", your medical assistant".
+      // Keep contractions out of name runs.
       expect(
         deleteNameRuns("I'm Cura, your medical assistant").text,
         "I'm Cura, your medical assistant",
       );
       expect(deleteNameRuns("I've reviewed Hemoglobin").text, contains("I've"));
-      // A real name run beside the contraction still goes.
-      expect(
-        deleteNameRuns("I'm Grace Quinn").text,
-        isNot(contains('Quinn')),
-      );
+      // Real name runs still go.
+      expect(deleteNameRuns("I'm Grace Quinn").text, isNot(contains('Quinn')));
     });
 
     test('leaves Title-case clinical headings untouched', () {
@@ -875,16 +893,13 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
   });
 
-  // A first-trimester report leaked the patient and the facility to the cloud
-  // provider. The identity was unlabelled, ALL-CAPS, and sat on lines that also
-  // carried clinical words, which cleared every layer of the barrier.
+  // ALL-CAPS identity test.
   group('ALL-CAPS identity never reaches the cloud', () {
     const gate = CloudPrivacyGate();
     const patient = 'DOE JANE MARIE';
     const facility = 'LAKEVIEW HOSPITAL & HEART INSTITUTE';
 
-    // What the scanner actually reads off the page: letterhead, patient block,
-    // then the clinical body.
+    // OCR input.
     const ocr =
         '$facility\n'
         'SECTOR 27, FAIRVIEW 999301\n'
@@ -909,7 +924,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       }
     }
 
-    test('stored summary carrying letterhead and patient block', () {
+    test('stored summary with letterhead and patient block', () {
       final doc = CuraDocument(
         id: 'trimester',
         title: 'First Trimester Screening',
@@ -929,7 +944,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       );
     });
 
-    test('identity merged onto an Impression line by OCR', () {
+    test('identity merged into Impression', () {
       final doc = CuraDocument(
         id: 'merged',
         title: 'First Trimester Screening',
@@ -962,7 +977,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       expectClean(gate.buildContext([doc]).text, keep: ['fetal heart rate']);
     });
 
-    test('ALL-CAPS stored title is replaced, not sent', () {
+    test('ALL-CAPS stored title is replaced', () {
       final doc = CuraDocument(
         id: 'captitle',
         title: patient,
@@ -976,7 +991,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       expect(safe.stats.titlesReplaced, 1);
     });
 
-    test('results rows carrying identity are dropped', () {
+    test('identity results rows are dropped', () {
       final doc = CuraDocument(
         id: 'rows',
         title: 'First Trimester Screening',
@@ -991,7 +1006,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       expectClean(gate.buildContext([doc]).text, keep: ['166 bpm']);
     });
 
-    test('inventory hint never carries identity', () {
+    test('inventory hint keeps no identity', () {
       final doc = CuraDocument(
         id: 'inv',
         title: 'First Trimester Screening',
@@ -1005,10 +1020,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
   });
 
-  // A genetic screening report keeps its maternal block as a results table, so
-  // the label and its value reach the gate already split apart. Every identity
-  // pattern is anchored on a `Label:` separator that the table parser has
-  // already consumed, which left demographic rows invisible to the barrier.
+  // Demographic rows test.
   group('demographic results rows', () {
     const gate = CloudPrivacyGate();
 
@@ -1056,11 +1068,11 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
         expect(context, isNot(contains(leak)), reason: 'leaked "$leak"');
       }
 
-      // Clinical measurements the report is actually about.
+      // Keep the measurements.
       for (final wanted in ['3.30', '0.470', '0.510']) {
         expect(context, contains(wanted), reason: 'lost "$wanted"');
       }
-      // Age and sex drive the risk calculation and are kept by policy.
+      // Keep age and sex.
       expect(context, contains('34 years'));
     });
 
@@ -1072,9 +1084,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
     });
   });
 
-  // Every string below was captured off the wire on a real device. Each one
-  // slipped through a rule that matched on spelling while OCR had misread the
-  // word (birth -> blrth, Jane -> Janc, Fairview -> FaLrview).
+  // OCR-mangled text test.
   group('OCR-mangled letterhead never reaches the cloud', () {
     const gate = CloudPrivacyGate();
 
@@ -1092,24 +1102,23 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
         'Date of blrth: 01 January 1990\n'
         'ki H-33, : 0999-111 11 11, 222 22 22 spaclally FaLrview 999301\n';
 
-    test('a date alone no longer qualifies a line', () {
+    test('date alone does not qualify a line', () {
       final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
       expect(kept, isNot(contains('blrth')));
       expect(kept, isNot(contains('1990')));
       expect(kept, isNot(contains('Examination date')));
     });
 
-    test('title-case fragments do not ride an open section', () {
+    test('title-case fragments do not ride a section', () {
       final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
       expect(kept, isNot(contains('Springvale')));
       expect(kept, isNot(contains('sprIngVales')));
-      // "general" is clinical vocabulary, "Speciality" is not, so one hit on a
-      // title-case line must not be enough to keep it.
+      // One hit is not enough.
       expect(kept, isNot(contains('General Speciality')));
       expect(kept, isNot(contains('Lakeview Hospital & Heart Institute')));
     });
 
-    test('title-case clinical labels are not collateral damage', () {
+    test('clinical title-case labels survive', () {
       final kept = keepMedicalLines(
         'Findings:\n'
         'Placenta Posterior\n'
@@ -1124,7 +1133,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       expect(kept, isNot(contains('General Speciality')));
     });
 
-    test('page and print footers are dropped whole', () {
+    test('page and print footers are dropped', () {
       final kept = keepMedicalLines(scannedPage, title: 'FIRST TRIMESTER');
       expect(kept, isNot(contains('Janc')));
       expect(kept, isNot(contains('31892')));
@@ -1137,7 +1146,7 @@ Tissue specimen received at Meadowlark Hospitals, Fairview will be discarded.
       }
     });
 
-    test('raw page text is not appended when a note already covers it', () {
+    test('raw page text stays out when note covers it', () {
       final doc = CuraDocument(
         id: 'screening',
         title: 'FIRST TRIMESTER SCREENING',

@@ -185,6 +185,74 @@ void main() {
       final g = groundingFor('explain my ultrasound', const []);
       expect(g.kind, GroundingKind.none);
     });
+
+    test('a two-letter acronym is a search term', () {
+      // Every other word here is a stopword, so with a length-3 floor the
+      // question had no terms at all and grounded on whatever was newest.
+      final mtb = _doc(
+        'mtb',
+        DocumentType.lab,
+        DateTime(2024, 9, 4),
+        title: 'Xpert MTB/RIF',
+        results: const [DocumentResult('MTB Complex', 'Not Detected')],
+      );
+      final g = groundingFor('can you explain my TB related report?', [
+        ultrasound,
+        mtb,
+      ]);
+      expect(g.kind, GroundingKind.grounded);
+      expect(g.source?.id, 'mtb');
+    });
+
+    test('a topic spanning two reports attaches both, cites the best', () {
+      final ct1 = _doc(
+        'ct-chest',
+        DocumentType.imaging,
+        DateTime(2025, 3, 1),
+        title: 'CT chest',
+        text: 'CT chest with contrast.',
+      );
+      final ct2 = _doc(
+        'ct-abdomen',
+        DocumentType.imaging,
+        DateTime(2025, 2, 1),
+        title: 'CT abdomen',
+        text: 'CT abdomen with contrast.',
+      );
+      final g = groundingFor('explain my contrast CT findings', [
+        ct1,
+        ct2,
+        cbc,
+      ]);
+      expect(g.kind, GroundingKind.grounded);
+      expect(g.contextDocs.length, 2);
+      expect(
+        g.contextDocs.map((d) => d.id),
+        containsAll(['ct-chest', 'ct-abdomen']),
+      );
+      // The citation is still the single best match, not the whole set, and it
+      // leads the attached set — the source cards are the attached documents in
+      // this order, so the first card must stay the one that would have been
+      // shown when only one document was ever attached.
+      expect(g.source?.id, isIn(['ct-chest', 'ct-abdomen']));
+      expect(g.source?.id, g.contextDocs.first.id);
+    });
+
+    test('attaching several never exceeds three', () {
+      final many = [
+        for (var i = 0; i < 6; i++)
+          _doc(
+            'hb-$i',
+            DocumentType.lab,
+            DateTime(2025, 1, i + 1),
+            title: 'Hemoglobin panel $i',
+            results: const [DocumentResult('Hemoglobin', '13.4', unit: 'gm%')],
+          ),
+      ];
+      final g = groundingFor('explain my hemoglobin result', many);
+      expect(g.kind, GroundingKind.grounded);
+      expect(g.contextDocs.length, lessThanOrEqualTo(3));
+    });
   });
 
   group('multiple documents of the same kind', () {
@@ -229,17 +297,20 @@ void main() {
       },
     );
 
-    test('"the other ultrasound" resolves via focus alone (no placeholder)', () {
-      // The "other" exclusion uses focusDocIds as well as shownSourceIds, so
-      // "the other ultrasound" resolves instead of asking which one.
-      final g = groundingFor(
-        'explain the other ultrasound in more detail',
-        twoUltrasounds,
-        focusDocIds: {'us-apr'},
-      );
-      expect(g.kind, GroundingKind.typeMatch);
-      expect(g.source?.id, 'us-jan');
-    });
+    test(
+      '"the other ultrasound" resolves via focus alone (no placeholder)',
+      () {
+        // The "other" exclusion uses focusDocIds as well as shownSourceIds, so
+        // "the other ultrasound" resolves instead of asking which one.
+        final g = groundingFor(
+          'explain the other ultrasound in more detail',
+          twoUltrasounds,
+          focusDocIds: {'us-apr'},
+        );
+        expect(g.kind, GroundingKind.typeMatch);
+        expect(g.source?.id, 'us-jan');
+      },
+    );
 
     test(
       'fresh ambiguous → newest by default, the other named (no placeholder)',
@@ -631,10 +702,7 @@ You have 5 TB-related records:
     });
   });
 
-  // A first-trimester screening report *is* an ultrasound, so its OCR names the
-  // modality just as well as a report actually titled "Ultrasound …". Sorting on
-  // date alone then hands every "the ultrasound report" question to whichever
-  // report is newest.
+  // Named modality should beat recency.
   group('a named modality prefers the document titled with it', () {
     final titled = _doc(
       'titled',

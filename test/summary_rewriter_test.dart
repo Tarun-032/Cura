@@ -12,7 +12,7 @@ const _scraped =
     'effusion. Mediastinum unremarkable.\n'
     'Impression: Findings consistent with pneumonia.';
 
-/// A believable rewrite: long enough to clear the near-empty floor.
+/// Long enough to pass the floor.
 const _prose =
     'A 3.2 cm area of consolidation sits in your right lower lobe, with no '
     'fluid around the lung.';
@@ -41,7 +41,7 @@ void main() {
         DocumentType.prescription,
       ]) {
         expect(
-          needsSummaryRewrite(type: type, note: _scraped),
+          needsSummaryRewrite(type: type, extractedText: '', note: _scraped),
           isTrue,
           reason: type.name,
         );
@@ -51,19 +51,55 @@ void main() {
     test('leaves computed and bill summaries alone', () {
       for (final type in [DocumentType.lab, DocumentType.receipt]) {
         expect(
-          needsSummaryRewrite(type: type, note: _scraped),
+          needsSummaryRewrite(type: type, extractedText: '', note: _scraped),
           isFalse,
           reason: type.name,
         );
       }
     });
 
+    test('a pathology report is a lab but reads like a narrative', () {
+      // Lab-stored summaries still rewrite.
+      expect(
+        needsSummaryRewrite(
+          type: DocumentType.lab,
+          extractedText: 'HISTOPATHOLOGY REPORT\nMicroscopic Description: ...',
+          note: _scraped,
+        ),
+        isTrue,
+      );
+      // A lab table stays alone.
+      expect(
+        needsSummaryRewrite(
+          type: DocumentType.lab,
+          extractedText: 'Haemoglobin 13.4 gm%\nWBC 7200 /cumm',
+          note: _scraped,
+        ),
+        isFalse,
+      );
+    });
+
     test('skips an empty or one-line summary', () {
-      expect(needsSummaryRewrite(type: DocumentType.imaging, note: null), isFalse);
-      expect(needsSummaryRewrite(type: DocumentType.imaging, note: '  '), isFalse);
       expect(
         needsSummaryRewrite(
           type: DocumentType.imaging,
+          extractedText: '',
+          note: null,
+        ),
+        isFalse,
+      );
+      expect(
+        needsSummaryRewrite(
+          type: DocumentType.imaging,
+          extractedText: '',
+          note: '  ',
+        ),
+        isFalse,
+      );
+      expect(
+        needsSummaryRewrite(
+          type: DocumentType.imaging,
+          extractedText: '',
           note: 'Impression: normal study.',
         ),
         isFalse,
@@ -74,6 +110,7 @@ void main() {
       expect(
         needsSummaryRewrite(
           type: DocumentType.imaging,
+          extractedText: '',
           note: '$_scraped Checked with Dr Quinn.',
           deterministicNote: _scraped,
         ),
@@ -82,6 +119,7 @@ void main() {
       expect(
         needsSummaryRewrite(
           type: DocumentType.imaging,
+          extractedText: '',
           note: '  $_scraped  ',
           deterministicNote: _scraped,
         ),
@@ -126,12 +164,15 @@ void main() {
     });
 
     test('rejects output that grew far past its source', () {
-      final padded = List.filled(60, 'The scan was reviewed carefully.').join(' ');
+      final padded = List.filled(
+        60,
+        'The scan was reviewed carefully.',
+      ).join(' ');
       expect(acceptSummaryRewrite(_scraped, padded), isNull);
     });
 
     test('trims a cut-off tail back to the last full sentence', () {
-      // What a token cap leaves behind: the last thought stops mid-word.
+      // Trim cut-off text.
       expect(
         acceptSummaryRewrite(
           _scraped,
@@ -148,7 +189,10 @@ void main() {
         const body =
             'The scan shows consolidation in the right lower lobe with no '
             'pleural effusion';
-        expect(acceptSummaryRewrite(_scraped, '$body$ending  '), '$body$ending');
+        expect(
+          acceptSummaryRewrite(_scraped, '$body$ending  '),
+          '$body$ending',
+        );
       }
     });
 
@@ -194,13 +238,15 @@ void main() {
     test('an accepted rewrite is stored and the row settles', () async {
       await repository.add(_doc(state: kSummaryPending));
 
-      await SummaryRewriter(repository, replying(const SummaryRewrite(_prose)))
-          .sweep();
+      await SummaryRewriter(
+        repository,
+        replying(const SummaryRewrite(_prose)),
+      ).sweep();
 
       final stored = (await repository.watchDocuments().first).single;
       expect(stored.summaryRewrite, _prose);
       expect(stored.summaryState, isNull);
-      // The verbatim text Ask quotes is untouched.
+      // Keep quoted text untouched.
       expect(stored.resultsNote, _scraped);
     });
 
@@ -261,7 +307,7 @@ void main() {
       await repository.add(_doc(id: 'scan-1', state: kSummaryPending));
       await repository.add(_doc(id: 'scan-2', state: kSummaryPending));
 
-      // Ask took the model back on the first document.
+      // Ask preempted the first document.
       await SummaryRewriter(
         repository,
         replying(const SummaryRewrite(null, preempted: true)),
@@ -279,7 +325,11 @@ void main() {
       await repository.add(_doc());
       var called = false;
 
-      await SummaryRewriter(repository, (summary, {required type, title}) async {
+      await SummaryRewriter(repository, (
+        summary, {
+        required type,
+        title,
+      }) async {
         called = true;
         return const SummaryRewrite(null);
       }).sweep();

@@ -6,47 +6,46 @@ import '../../core/data/providers.dart';
 import '../ai/ai_providers.dart';
 import '../ai/ai_service.dart';
 import '../library/document.dart';
+import 'document_shape.dart';
 import 'scan_extraction.dart';
 
 /// State values for `CuraDocument.summaryState`.
 const kSummaryPending = 'pending';
 const kSummaryRetry = 'retry';
 
-/// Only the scraped narrative summaries read like a dump, and only while they
-/// are still exactly what the scan produced: a summary the user rewrote by hand
-/// is theirs. [deterministicNote] is what the scan proposed, when known.
+/// Rewrite only untouched scraped summaries.
 bool needsSummaryRewrite({
   required DocumentType type,
+  required String extractedText,
   required String? note,
   String? deterministicNote,
 }) {
-  if (!type.isSummaryShaped && type != DocumentType.prescription) return false;
+  if (!isSummaryDocument(type, extractedText) &&
+      type != DocumentType.prescription) {
+    return false;
+  }
   final text = note?.trim() ?? '';
   if (text.isEmpty) return false;
   if (deterministicNote != null && text != deterministicNote.trim()) {
     return false;
   }
-  // One sentence is already readable; rewriting it only risks losing a word.
+  // One sentence is already fine.
   return text.length >= 120;
 }
 
-/// Validates one rewrite against the summary it came from, returning the text
-/// to keep or null to discard. The model may rephrase, never renumber, and
-/// never pad: an output much longer than its source has added something.
+/// Validate one rewrite against its source.
 String? acceptSummaryRewrite(String source, String? output) {
   var out = output?.trim() ?? '';
   if (out.isEmpty) return null;
   if (looksLikeModelRefusal(out)) return null;
   if (out.length > source.length * 1.5 + 200) return null;
-  // Neither backend reports hitting the token cap, so the text is the only
-  // evidence. Anything past the last sentence ending was cut off mid-thought.
+  // Trim cut-off tails.
   if (!_sentenceEnders.contains(out[out.length - 1])) {
     final cut = _lastSentenceEnd(out);
     if (cut < 0) return null;
     out = out.substring(0, cut + 1);
   }
-  // A condensed summary is meant to be far shorter than its source, so this is
-  // an absolute floor, not a ratio: only a near-empty result is refused.
+  // Reject near-empty output.
   if (out.length < 60) return null;
   if (!numbersGrounded(source, out)) return null;
   return out;
@@ -61,8 +60,7 @@ int _lastSentenceEnd(String text) {
   return -1;
 }
 
-/// One call to the model, taken as a function so the queue can be tested
-/// without one. [AiService.rewriteSummary] is the only implementation.
+/// One model call.
 typedef SummaryRewriteRequest =
     Future<SummaryRewrite> Function(
       String summary, {
@@ -70,9 +68,7 @@ typedef SummaryRewriteRequest =
       String? title,
     });
 
-/// Rewrites saved summaries in the background, one at a time. Every document it
-/// touches already has a readable deterministic summary, so failing is always
-/// an option: the row simply keeps what it has.
+/// Rewrite saved summaries in the background.
 class SummaryRewriter {
   SummaryRewriter(this._repo, this._rewrite);
 
@@ -82,8 +78,7 @@ class SummaryRewriter {
   bool _running = false;
   bool _again = false;
 
-  /// Works through every pending document. Cheap to call: a sweep already
-  /// running just goes round once more when it finishes.
+  /// Sweep pending documents.
   Future<void> sweep() async {
     if (_running) {
       _again = true;
@@ -107,12 +102,11 @@ class SummaryRewriter {
     }
   }
 
-  /// False when Ask took the model back, which ends the sweep and leaves the
-  /// row pending for the next one.
+  /// Stop when Ask preempts the rewrite.
   Future<bool> _rewriteOne(CuraDocument doc) async {
     final source = doc.resultsNote?.trim() ?? '';
     if (source.isEmpty) {
-      // Nothing left to rewrite: the summary was emptied after it was queued.
+      // Nothing left to rewrite.
       await _repo.setSummaryRewrite(doc.id);
       return true;
     }
@@ -123,7 +117,7 @@ class SummaryRewriter {
       await _repo.setSummaryRewrite(doc.id, text: kept);
       return true;
     }
-    // A first failure is worth one retry on the next launch; a second is not.
+    // Retry once, then stop.
     debugPrint(
       '[Cura.ai] rewrite rejected id=${doc.id} state=${doc.summaryState}',
     );

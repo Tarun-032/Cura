@@ -24,12 +24,7 @@ import 'empty_state_view.dart';
 import 'library_view.dart';
 import 'manual_entry_screen.dart';
 
-/// The app shell. Owns the bottom nav + center scan FAB and switches between the
-/// four tabs (Home / Timeline / Ask / Settings), keeping the nav and FAB on each.
-///
-/// Documents come from the on-device Drift database via Riverpod
-/// ([documentsProvider]); the child views just render the list this shell hands
-/// them.
+/// App shell with bottom nav and scan FAB.
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, required this.homeAskExample});
 
@@ -46,8 +41,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Picks up anything a failure or a force-close left pending.
-    unawaited(ref.read(summaryRewriterProvider).sweep());
+    // Sweep pending summaries.
+    unawaited(_sweepSummaries());
+  }
+
+  /// Queue old summaries and sweep them.
+  Future<void> _sweepSummaries() async {
+    final repo = ref.read(documentRepositoryProvider);
+    final ids = [
+      for (final d in await repo.summaryRewriteCandidates())
+        if (needsSummaryRewrite(
+          type: d.type,
+          extractedText: d.extractedText,
+          note: d.resultsNote,
+        ))
+          d.id,
+    ];
+    await repo.queuePendingSummaries(ids);
+    await ref.read(summaryRewriterProvider).sweep();
   }
 
   Future<void> _onAdd() async {
@@ -98,8 +109,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  // Manual entry: no source document, no OCR — the user types the record and
-  // may attach evidence photos. The form pops a finished CuraDocument.
+  // Manual entry flow.
   Future<void> _onAddManually() async {
     final doc = await Navigator.of(context).push<CuraDocument>(
       MaterialPageRoute(builder: (_) => const ManualEntryScreen()),
@@ -213,7 +223,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     var current = first;
     final draft = _draftFrom(current);
     final useRemote = await ref.read(remoteAiStoreProvider).remoteActive();
-    // scanRefinementFields decides what the model may touch; null when nothing.
+    // Start scan refinement.
     final refinement = ref
         .read(aiServiceProvider)
         .startDocumentRefinement(
@@ -253,13 +263,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
     if (doc != null) {
-      // The scraped narrative summary reads like a dump. Queue it for a
-      // readable rewrite, unless the user already wrote their own in Review.
-      // With no engine set up there is nothing to wait for, so nothing is
-      // queued and the deterministic summary simply stands.
+      // Queue a readable rewrite when needed.
       final queued =
           needsSummaryRewrite(
             type: doc.type,
+            extractedText: doc.extractedText,
             note: doc.resultsNote,
             deterministicNote: draft.resultsNote,
           ) &&
@@ -278,9 +286,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final svc = ref.read(scanServiceProvider);
     final type = svc.detectType(result.text);
     final summaryShaped = isSummaryDocument(type, result.text);
-    // Prescriptions extract deterministically (see ScanService.parsePrescription)
-    // and a receipt starts with an empty note; every other type keeps its
-    // deterministic result-count or findings note.
+    // Handle prescriptions and receipts separately.
     final List<DocumentResult> results;
     final String? resultsNote;
     if (type == DocumentType.prescription) {
@@ -399,7 +405,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _onSelectTab(CuraTab tab) {
-    // Ask opens as a focused full-screen rather than an inline tab.
+    // Ask opens full-screen.
     if (tab == CuraTab.ask) {
       _openAsk();
       return;
@@ -408,8 +414,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _openAsk() async {
-    // Preference loading adds a tiny async gap before the route is pushed; guard
-    // it so a fast double tap cannot advance twice or stack two Ask screens.
+    // Guard against double taps.
     if (_openingAsk) return;
     _openingAsk = true;
     try {
@@ -430,7 +435,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  // Settings -> "Export all data": pick records, save one PDF per record.
+  // Export all data flow.
   void _openExport() {
     final current = ref.read(documentsProvider).value ?? const [];
     if (current.isEmpty) {
@@ -473,8 +478,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(documentRepositoryProvider).deleteAll();
       await ref.read(scanServiceProvider).deleteAllImages();
       await ref.read(pdfImportServiceProvider).deleteAllImports();
-      // The cloud API key is data on this device too — wipe it and revert to the
-      // on-device engine so "Delete all data" leaves nothing behind.
+      // Wipe the cloud key too.
       await ref.read(remoteAiStoreProvider).clear();
       ref.invalidate(aiServiceProvider);
       ref.invalidate(activeEngineProvider);
@@ -514,16 +518,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // The shell (nav + FAB) always renders; while the DB is opening we treat it
-    // as empty so the empty state shows for a beat rather than a spinner.
+    // Show empty state while DB opens.
     final documents = ref
         .watch(documentsProvider)
         .maybeWhen(data: (d) => d, orElse: () => const <CuraDocument>[]);
 
     return PopScope(
-      // We intercept every back gesture/button at the shell: from a non-Home
-      // tab it returns Home; on Home it confirms before quitting. canPop stays
-      // false so the framework never pops the root route (which would exit).
+      // Intercept back at the shell.
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;

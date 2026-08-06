@@ -1,13 +1,9 @@
 import '../library/document.dart';
 import 'remote/pii_redactor.dart' show keepMedicalLines;
 
-/// Lightweight, on-device keyword retrieval over the saved documents. No model
-/// or network — it ranks documents by how well their text matches the question,
-/// so the LLM only ever sees the few relevant ones. Effective because the scan
-/// pipeline already stores clean, keyword-rich fields (test names, values, title).
+/// On-device keyword retrieval over saved documents.
 
-/// Common words that carry no retrieval signal — including generic document
-/// words ("report", "results") that otherwise match every saved document.
+/// Words with no retrieval signal.
 const _stopwords = {
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'is', 'are',
   'was',
@@ -26,13 +22,11 @@ const _stopwords = {
   'report', 'reports', 'result', 'results', 'value', 'values', 'record',
   'records', 'document', 'documents', 'reading', 'readings', 'please', 'can',
   'you', 'give', 'explain',
-  // Generic category words carry no signal and, via the +2 title boost, would
-  // ground onto any doc whose title contains them. Specific terms still match.
+  // Generic category words.
   'test', 'tests', 'scan', 'scans', 'lab', 'labs', 'prescription',
   'prescriptions', 'medication', 'medications', 'summary', 'summarize',
   'summarise', 'level', 'levels', 'checkup', 'appointment', 'visit',
-  // Generic pronouns / quantifiers that carry no retrieval signal — they must
-  // never ground a follow-up like "the other one too" onto a random document.
+  // Generic pronouns and quantifiers.
   'other', 'another', 'one', 'ones', 'too', 'also', 'same', 'else', 'different',
 };
 
@@ -42,19 +36,25 @@ class ScoredDoc {
   final int score;
 }
 
+/// Short terms that still count.
+const _shortTerms = {'tb', 'ct', 'hb', 'bp', 't3', 't4', 'rh'};
+
 /// Splits the question into meaningful lowercase terms.
 List<String> _terms(String text) {
   return text
       .toLowerCase()
       .split(RegExp(r'[^a-z0-9]+'))
-      .where((t) => t.length >= 3 && !_stopwords.contains(t))
+      .where(
+        (t) =>
+            (t.length >= 3 || _shortTerms.contains(t)) &&
+            !_stopwords.contains(t),
+      )
       .toList();
 }
 
 const _monthNames = kMonthNames;
 
-/// Lowercase full month names, January = index 0. Public so the query router can
-/// echo a month back to the user ("reports from August").
+/// Month names, January = index 0.
 const kMonthNames = [
   'january',
   'february',
@@ -98,7 +98,7 @@ String _ordinal(int n) {
   }
 }
 
-/// Every plausible way to mention a date, so date questions retrieve the doc.
+/// Date tokens for a document.
 String _dateTokens(DateTime d) {
   final m = d.month;
   final day = d.day;
@@ -142,7 +142,7 @@ String _haystack(CuraDocument d) {
   return b.toString().toLowerCase();
 }
 
-/// A date referenced in the question (any part may be null).
+/// Date mentioned in a question.
 class QueryDate {
   const QueryDate(this.month, this.day, this.year);
   final int? month;
@@ -150,13 +150,11 @@ class QueryDate {
   final int? year;
   bool get hasMonth => month != null;
 
-  /// True when the question pinned down at least a month or a year — enough to
-  /// filter documents by date.
+  /// True when the question pins a month or year.
   bool get hasAny => month != null || year != null;
 }
 
-/// Parses a date mention from the question, e.g. "september 3rd 2024". Public so
-/// the query router reuses the exact same parser the retrieval ranking uses.
+/// Parse a date mention from the question.
 QueryDate parseQueryDate(String q) {
   final lower = q.toLowerCase();
   int? month;
@@ -181,9 +179,7 @@ QueryDate parseQueryDate(String q) {
   return QueryDate(month, day, year);
 }
 
-/// Ranks documents by keyword overlap with [question] (highest first). When the
-/// question names a specific date, the document with that date is boosted hard
-/// so it wins the tie that common date words ("report", "2024") would create.
+/// Rank documents by question overlap.
 List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
   final terms = _terms(question);
   final qd = parseQueryDate(question);
@@ -194,8 +190,7 @@ List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
     final labels = d.results.map((r) => r.label.toLowerCase()).join(' ');
     var score = 0;
     for (final t in terms) {
-      // Plural tolerance: if the exact term isn't present, also try its singular
-      // ("ultrasounds" → "ultrasound") so wording/plurality doesn't drop a match.
+      // Try the singular too.
       final singular = t.length > 3 && t.endsWith('s')
           ? t.substring(0, t.length - 1)
           : null;
@@ -206,7 +201,7 @@ List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
       if (has(title)) score += 2;
       if (has(labels)) score += 1;
     }
-    // Strong, specific boost when the question's date matches this document's.
+    // Boost matching dates.
     if (qd.hasMonth && d.date.month == qd.month) {
       final yearOk = qd.year == null || d.date.year == qd.year;
       if (yearOk) {
@@ -220,9 +215,7 @@ List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
   return scored;
 }
 
-/// Picks the documents to hand the model: the best keyword matches within a
-/// budget, or — when nothing matches (e.g. "summarize my records") — the most
-/// recent ones.
+/// Pick the documents to send to the model.
 List<CuraDocument> selectContext(
   String question,
   List<CuraDocument> docs, {
@@ -943,13 +936,16 @@ Grounding groundingFor(
     );
   }
 
-  // No type named — a specific keyword match → the best document, cited.
+  // No type named — a specific keyword match → the best documents, the top one
+  // cited. Several are attached because a topic often spans reports ("my TB
+  // reports"); [selectContext]'s score threshold and char budget decide how
+  // many actually make it, and the citation stays the single best match.
   final ranked = rankDocuments(q, docs);
   final top = ranked.isNotEmpty ? ranked.first : null;
   if (top != null && top.score >= _groundThreshold) {
     return Grounding(
       GroundingKind.grounded,
-      contextDocs: selectContext(q, docs, maxDocs: 1, maxChars: 3200),
+      contextDocs: selectContext(q, docs, maxDocs: 3, maxChars: 3200),
       source: top.document,
     );
   }
