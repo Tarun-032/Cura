@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,8 +28,7 @@ import 'voice_model_sheet.dart';
 /// Voice-input UI phase for the composer mic.
 enum _VoiceState { idle, recording, transcribing }
 
-/// One message in the Ask thread. [emphasis] is a substring of [text] rendered
-/// in the accent color; [source] (when set) renders a cited source-document card.
+/// One chat message.
 class ChatMessage {
   const ChatMessage({
     required this.role,
@@ -46,26 +46,22 @@ class ChatMessage {
   final String text;
   final String? emphasis;
 
-  /// The primary cited document (newest, for single-card answers and for
-  /// follow-up focus). Kept even when [sources] is populated.
+  /// Main cited document.
   final CuraDocument? source;
 
-  /// For a multi-match answer (a count over several reports), the reports to
-  /// show as source cards — newest first. Empty for single-source answers.
+  /// Source cards for multi-match answers.
   final List<CuraDocument> sources;
 
-  /// Complete validated match count behind [sources] — the "+N more".
+  /// Validated match count.
   final int sourceTotal;
 
-  /// A reasoning model's hidden chain, shown live in a collapsible panel above
-  /// the answer. Null/empty for non-reasoning replies.
+  /// Reasoning text.
   final String? thinking;
 
-  /// True while the reasoning is still streaming (before the answer begins).
+  /// Reasoning is streaming.
   final bool thinkingActive;
 
-  /// How long the model reasoned, in seconds — shown once reasoning is done
-  /// ("Thought for Xs").
+  /// Reasoning time in seconds.
   final int? thinkingSeconds;
 
   ChatMessage copyWith({
@@ -91,11 +87,7 @@ class ChatMessage {
   }
 }
 
-/// Plain-language Q&A over the user's own documents. Pushed full-screen with its
-/// own input bar (no bottom nav).
-///
-/// Answers come from the on-device model grounded in the user's saved documents
-/// (keyword retrieval → LLM → cited source). Fully offline.
+/// Q&A for the user's documents.
 class AskScreen extends ConsumerStatefulWidget {
   const AskScreen({
     super.key,
@@ -119,12 +111,16 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
 
-  // On-device voice input (Whisper.cpp). Records → transcribes → fills the
-  // composer for review; never auto-sends. Nothing leaves the device.
+  // Follow the active answer while it streams.
+  bool _following = true;
+
+  // A finger is on the thread.
+  bool _touching = false;
+
+  // On-device voice input.
   final _voice = VoiceInputController();
   _VoiceState _voiceState = _VoiceState.idle;
-  // Live mic level for the recording waveform, created once per session so the
-  // waveform subscribes to a single stream (not a new one on every rebuild).
+  // Live mic level for the waveform.
   Stream<double>? _amplitude;
 
   final List<ChatMessage> _messages = [];
@@ -132,36 +128,31 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   bool _showSuggestions = true;
   bool _busy = false;
 
-  // Halts the model itself, not just the reveal.
+  // Stop the model itself.
   GenerationCancellation? _cancel;
 
-  // Bumped per question and by a stop. An answer that no longer holds the
-  // latest number writes nothing, even if its stream never ends.
+  // Bump on each send and stop.
   int _sendSeq = 0;
 
-  // Message being re-asked, or null. The thread waits until it is sent.
+  // Message being edited.
   int? _editingIndex;
   final _inputFocus = FocusNode();
 
-  // Typewriter reveal. The model emits words in bursts, so the streamed text is
-  // buffered in [_streamTarget] and revealed a few characters per frame.
+  // Streamed text reveal.
   Timer? _typer;
   Completer<void>? _typerDone;
   String _streamTarget = '';
   int _revealed = 0;
   bool _streamDone = false;
   CuraDocument? _streamSource;
-  // Multi-report cards for a streamed (cloud) count answer — applied when the
-  // typewriter finishes. Empty for single-source answers ([_streamSource]).
+  // Source cards for streamed count answers.
   List<CuraDocument> _streamSources = const [];
   int _streamSourceTotal = 0;
 
-  // True while a cloud answer streams. Cloud returns everything almost at once,
-  // so the reveal is capped to a readable pace (see [_kCloudRevealStep]).
+  // Cloud answer is streaming.
   bool _streamRemote = false;
 
-  // Max chars revealed per 22 ms tick for a cloud answer → ~135 chars/s, a
-  // readable typing speed regardless of how fast the tokens actually arrived.
+  // Reveal step for cloud answers.
   static const _kCloudRevealStep = 3;
 
   // Reasoning stream (reasoning models only): the hidden chain, shown live in the
@@ -174,9 +165,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   @override
   void initState() {
     super.initState();
-    // Start a fresh chat each time Ask is opened; past chats live in History.
-    // The active model shown in the header comes from aiModelStateProvider
-    // (watched in build), so it stays in sync with Settings automatically.
+    // Start a fresh chat each time Ask opens.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _ensureAiReady();
     });
@@ -184,7 +173,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
 
   @override
   void dispose() {
-    // Leaving mid-answer must not leave the model generating.
+    // Stop generation on leave.
     _cancel?.cancel();
     _cancelTyper();
     _voice.dispose();
@@ -194,17 +183,14 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     super.dispose();
   }
 
-  // True when an engine can actually answer: the cloud engine is the active
-  // (configured) one, or an on-device model is installed. Cloud-only users have
-  // no local model, so Ask must never gate on the on-device model alone.
+  // True when an engine can answer.
   Future<bool> _aiReady() async {
     final engine = await ref.read(activeEngineProvider.future);
     if (engine.isRemote) return true;
     return await ref.read(aiModelManagerProvider).installedModel() != null;
   }
 
-  // Ask needs an engine, so on entry point the user to Settings when neither is
-  // set up, and return Home if they decline.
+  // Prompt for setup when no engine is ready.
   Future<void> _ensureAiReady() async {
     if (await _aiReady()) return;
     if (!mounted) return;
@@ -307,6 +293,8 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       _messages.add(ChatMessage(role: ChatRole.user, text: text));
     });
     _input.clear();
+    // A new question re-arms the follow.
+    _following = true;
     _scrollToEnd();
 
     _sessionId ??= (await repo.createSession(_titleFor(text))).id;
@@ -661,9 +649,25 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     });
   }
 
+  // Slack for counting a released gesture as still at the bottom.
+  static const _kFollowSlack = 40.0;
+
+  /// Dragging back stops the follow; only a gesture ending at the bottom
+  /// restarts it. Re-arming mid-drag fights the finger.
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n is UserScrollNotification) {
+      if (n.direction == ScrollDirection.forward) _following = false;
+    } else if (n is ScrollEndNotification) {
+      final m = n.metrics;
+      _following = m.maxScrollExtent - m.pixels <= _kFollowSlack;
+    }
+    return false;
+  }
+
   // Pins to the bottom without an animation, so rapid typewriter ticks don't
-  // stack up competing 300ms scrolls (which is what makes streaming feel janky).
+  // stack up competing 300ms scrolls. Skipped while the reader has taken over.
   void _scrollToEndGentle() {
+    if (!_following || _touching) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
@@ -891,39 +895,47 @@ class _AskScreenState extends ConsumerState<AskScreen> {
 
               // Thread.
               Expanded(
-                child: ListView(
-                  controller: _scroll,
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-                  children: [
-                    if (_messages.isEmpty)
-                      _MessageBubble(
-                        message: ChatMessage(
-                          role: ChatRole.assistant,
-                          text: widget.prompts.welcome,
-                        ),
-                        onViewSource: widget.onOpenDocument,
-                      ),
-                    for (var i = 0; i < _messages.length; i++)
-                      _MessageBubble(
-                        message: _messages[i],
-                        onViewSource: widget.onOpenDocument,
-                        // Only the last question offers Edit.
-                        onEdit: i == _editableIndex && _editingIndex == null
-                            ? () => _editLastQuestion(i)
-                            : null,
-                      ),
-                    // Only while waiting for the first token; once the assistant
-                    // bubble exists it grows in place instead.
-                    if (_busy &&
-                        (_messages.isEmpty ||
-                            _messages.last.role == ChatRole.user))
-                      const _TypingBubble(),
-                    if (_showSuggestions)
-                      _Suggestions(
-                        items: widget.prompts.suggestions,
-                        onTap: _send,
-                      ),
-                  ],
+                child: Listener(
+                  onPointerDown: (_) => _touching = true,
+                  onPointerUp: (_) => _touching = false,
+                  onPointerCancel: (_) => _touching = false,
+                  child: NotificationListener<ScrollNotification>(
+                    onNotification: _onScrollNotification,
+                    child: ListView(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+                      children: [
+                        if (_messages.isEmpty)
+                          _MessageBubble(
+                            message: ChatMessage(
+                              role: ChatRole.assistant,
+                              text: widget.prompts.welcome,
+                            ),
+                            onViewSource: widget.onOpenDocument,
+                          ),
+                        for (var i = 0; i < _messages.length; i++)
+                          _MessageBubble(
+                            message: _messages[i],
+                            onViewSource: widget.onOpenDocument,
+                            // Only the last question offers Edit.
+                            onEdit: i == _editableIndex && _editingIndex == null
+                                ? () => _editLastQuestion(i)
+                                : null,
+                          ),
+                        // Only while waiting for the first token; once the
+                        // assistant bubble exists it grows in place instead.
+                        if (_busy &&
+                            (_messages.isEmpty ||
+                                _messages.last.role == ChatRole.user))
+                          const _TypingBubble(),
+                        if (_showSuggestions)
+                          _Suggestions(
+                            items: widget.prompts.suggestions,
+                            onTap: _send,
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
 
