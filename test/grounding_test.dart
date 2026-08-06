@@ -608,8 +608,9 @@ You have 5 TB-related records:
         title: 'TB Pyrosequencing XDR',
       );
 
+      // A partial title alone proves nothing.
       expect(
-        explicitlyNamedDocumentsInOrder('- Pyrosequencing — Sep 4, 2024', [
+        explicitlyNamedDocumentsInOrder('- Pyrosequencing, the XDR one', [
           first,
         ]),
         isEmpty,
@@ -619,6 +620,143 @@ You have 5 TB-related records:
           '- TB Pyrosequencing XDR — Sep 4, 2024',
           [first, duplicate],
         ),
+        isEmpty,
+      );
+    });
+
+    test('a unique date rescues a title the model shortened', () {
+      // Stored as "Serum Ferritin Assay", written as "Ferritin Assay".
+      final ferritin = _doc(
+        'ferritin',
+        DocumentType.lab,
+        DateTime(2022, 11, 4),
+        title: 'Serum Ferritin Assay',
+      );
+      final thyroid = _doc(
+        'thyroid',
+        DocumentType.lab,
+        DateTime(2023, 5, 18),
+        title: 'Thyroid Function Panel',
+      );
+      const answer = '''
+You have 2 reports:
+**Thyroid Function Panel** — May 18, 2023 — TSH 2.1 mIU/L.
+**Ferritin Assay** — Nov 4, 2022 — Ferritin 18 ng/mL.
+''';
+
+      expect(
+        explicitlyNamedDocumentsInOrder(answer, [
+          ferritin,
+          thyroid,
+        ]).map((d) => d.id),
+        ['thyroid', 'ferritin'],
+      );
+    });
+
+    test('a date two reports share stays ambiguous', () {
+      final morning = _doc(
+        'morning',
+        DocumentType.lab,
+        DateTime(2023, 4, 2),
+        title: 'Morning cortisol',
+      );
+      final evening = _doc(
+        'evening',
+        DocumentType.lab,
+        DateTime(2023, 4, 2),
+        title: 'Evening cortisol',
+      );
+
+      expect(
+        explicitlyNamedDocumentsInOrder('- The report from Apr 2, 2023', [
+          morning,
+          evening,
+        ]),
+        isEmpty,
+      );
+    });
+
+    test('a line already naming a report does not pull in a sibling date', () {
+      final thyroid = _doc(
+        'thyroid',
+        DocumentType.lab,
+        DateTime(2023, 5, 18),
+        title: 'Thyroid Function Panel',
+      );
+      final ferritin = _doc(
+        'ferritin',
+        DocumentType.lab,
+        DateTime(2022, 11, 4),
+        title: 'Serum Ferritin Assay',
+      );
+
+      expect(
+        explicitlyNamedDocumentsInOrder(
+          '- **Thyroid Function Panel** — May 18, 2023 — follows the Nov 4, 2022 assay.',
+          [thyroid, ferritin],
+        ).map((d) => d.id),
+        ['thyroid'],
+      );
+    });
+
+    test('finds a report named by the safe title the cloud was given', () {
+      // The inventory sends safeTitle, so the answer echoes that spelling.
+      const gate = CloudPrivacyGate();
+      final lft = _doc(
+        'lft',
+        DocumentType.lab,
+        DateTime(2023, 1, 9),
+        title: 'Meadowlark Clinic liver panel',
+      );
+      expect(gate.safeTitle(lft), 'Laboratory report');
+
+      // No alias, no date to fall back on.
+      expect(
+        explicitlyNamedDocumentsInOrder('- **Laboratory report**', [lft]),
+        isEmpty,
+      );
+      expect(
+        explicitlyNamedDocumentsInOrder(
+          '- **Laboratory report** — Jan 9, 2023',
+          [lft],
+          aliasTitle: gate.safeTitle,
+        ).map((d) => d.id),
+        ['lft'],
+      );
+    });
+
+    test('two reports sharing a safe title still split on the date', () {
+      const gate = CloudPrivacyGate();
+      final january = _doc(
+        'jan',
+        DocumentType.lab,
+        DateTime(2023, 1, 9),
+        title: 'Meadowlark Clinic liver panel',
+      );
+      final october = _doc(
+        'oct',
+        DocumentType.lab,
+        DateTime(2022, 10, 20),
+        title: 'Meadowlark Clinic renal panel',
+      );
+      const answer = '''
+- **Laboratory report** — Oct 20, 2022
+- **Laboratory report** — Jan 9, 2023
+''';
+
+      expect(
+        explicitlyNamedDocumentsInOrder(answer, [
+          january,
+          october,
+        ], aliasTitle: gate.safeTitle).map((d) => d.id),
+        ['oct', 'jan'],
+      );
+      // Same canonical title, no date to split them.
+      expect(
+        explicitlyNamedDocumentsInOrder('- **Laboratory report**', [
+          january,
+          october,
+        ], aliasTitle: gate.safeTitle),
         isEmpty,
       );
     });

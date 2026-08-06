@@ -4,9 +4,7 @@ import '../scan/receipt_parser.dart'
     show isFinalReceiptAmountLabel, isReceiptSummaryLabel;
 import 'retrieval.dart';
 
-/// A natural-language answer built from the structured documents, no LLM. Only
-/// returned when [routeQuestion] is confident it can be exact. [source] is the
-/// document to show in the answer card.
+/// A natural-language answer from structured documents.
 enum RoutedAnswerKind { value, count, latest, list, notFound }
 
 class RoutedAnswer {
@@ -24,33 +22,23 @@ class RoutedAnswer {
   final List<String> protectedFacts;
   final CuraDocument? source;
 
-  /// For a multi-match answer, the complete matching set to show as source
-  /// cards, newest first. Empty for single-source or non-collection answers
-  /// ([source] carries those).
+  /// Matching source cards, newest first.
   final List<CuraDocument> sources;
 
-  /// The true number of matching reports. Drives the "+N more" label while the
-  /// complete [sources] set remains available after expansion. 0 when empty.
+  /// Total matching reports.
   final int sourceTotal;
 
-  /// True when [sources] came from an exact type/modality/date scope rather
-  /// than free-form topical keyword ranking. Cloud answers may use this set
-  /// directly; semantic collections instead map the exact titles the model
-  /// names back to saved documents after generation.
+  /// True when the sources are exact matches.
   final bool sourcesAreAuthoritative;
 
-  /// A short factual answer needs very little generation. Lists get extra room
-  /// because every displayed report must survive the rewrite unchanged.
+  /// Short answers use less room.
   int get rewriteMaxTokens => kind == RoutedAnswerKind.list ? 192 : 96;
 }
 
-/// The instant sentence-builder is a local-model optimization only. A configured
-/// cloud model must see every turn so it can use conversation history and the
-/// complete sanitized inventory instead of returning a canned router sentence.
+/// Use the router only for local answers.
 bool shouldUseQueryRouter({required bool cloudActive}) => !cloudActive;
 
-/// Tiny prompt that makes an already-verified router answer sound conversational.
-/// Carries no document context: the model is a wording layer, nothing more.
+/// Prompt for a plain rewrite.
 String buildVerifiedRewritePrompt(String question, RoutedAnswer answer) =>
     'Rewrite the verified answer below as a natural, direct reply to the user. '
     'Keep every count, value, unit, date, range, status, and report identity '
@@ -68,8 +56,7 @@ String _normalizeVerifiedFact(String text) => text
     .replaceAll(RegExp(r'\s+'), ' ')
     .trim();
 
-/// Rejects a local rewrite that dropped a protected fact or introduced a new
-/// number. A failed rewrite is never shown; the exact router sentence wins.
+/// Reject a rewrite that drops facts or adds numbers.
 bool isValidVerifiedRewrite(String rewrite, RoutedAnswer answer) {
   final normalized = _normalizeVerifiedFact(rewrite);
   if (normalized.isEmpty) return false;
@@ -101,9 +88,7 @@ bool isValidVerifiedRewrite(String rewrite, RoutedAnswer answer) {
 String verifiedRewriteOrFallback(String rewrite, RoutedAnswer answer) =>
     isValidVerifiedRewrite(rewrite, answer) ? rewrite.trim() : answer.text;
 
-/// Answers [question] instantly from the structured fields of [docs], skipping
-/// the model. Returns null unless fully confident, so the caller falls back to
-/// the LLM and a miss is only ever slower, never wrong. Pure: no model or I/O.
+/// Answer from structured fields only.
 RoutedAnswer? routeQuestion(String question, List<CuraDocument> docs) {
   if (docs.isEmpty) return null;
   final q = question.toLowerCase().trim();
@@ -112,23 +97,18 @@ RoutedAnswer? routeQuestion(String question, List<CuraDocument> docs) {
   final qd = parseQueryDate(question);
   final personal = _isPersonal(q) || qd.hasAny;
 
-  // Anything that needs reasoning, interpretation, or general knowledge goes to
-  // the model. This is the main "no gaps" guard.
+  // Send reasoning to the model.
   if (_needsReasoning(q)) return null;
-  // "What is cholesterol?" (a definition) — only block when it's NOT about the
-  // user's own data. "What is my cholesterol?" stays on the fast path.
+  // Keep definitions off the fast path.
   if (!personal && _looksLikeDefinition(q)) return null;
 
   final type = detectDocumentType(q);
-  // Imaging questions usually name a modality, which is narrower than the type,
-  // so "how many ultrasounds" must not count every imaging report.
+  // Keep imaging modality questions narrow.
   final modalityLabel = type == DocumentType.imaging
       ? namedImagingModalityLabel(q)
       : null;
 
-  // Order matters: a recognised test name is a value question even if it also
-  // says "latest"; money questions outrank latest/count so "how much was my
-  // last bill" answers with the amount, not the document identity.
+  // Order matters for value and count questions.
   return _tryValueLookup(q, qd, docs) ??
       _tryReceiptAmount(q, qd, docs) ??
       _tryLatest(q, qd, type, modalityLabel, docs) ??
@@ -140,8 +120,7 @@ RoutedAnswer? routeQuestion(String question, List<CuraDocument> docs) {
 // Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Verbs/phrases that mean the user wants prose, interpretation or advice — the
-/// model's job, not a template's.
+/// Phrases that need reasoning.
 const _reasoningTriggers = [
   'explain',
   'summarize',
@@ -187,11 +166,11 @@ bool _needsReasoning(String q) {
   return false;
 }
 
-/// "what is/are/does ..." with no personal framing → a definition request.
+/// A general definition request.
 bool _looksLikeDefinition(String q) =>
     RegExp(r'\bwhat\s+(is|are|does)\b').hasMatch(q);
 
-/// The question is about the user's own records (vs. a general definition).
+/// The question is about the user's records.
 bool _isPersonal(String q) =>
     RegExp(r'\b(my|mine|me|i)\b').hasMatch(q) ||
     RegExp(r'\b(was|were|had)\b').hasMatch(q);
@@ -561,11 +540,11 @@ _CollectionScope _collectionScope(
     return _CollectionScope(base, specific: false);
   }
 
-  final terms = q
-      .split(RegExp(r'[^a-z0-9]+'))
+  // queryTerms first, so a stopword ("were", "other") can't pose as a qualifier
+  // we then fail to match and scope to nothing.
+  final terms = queryTerms(q)
       .where(
         (t) =>
-            t.length >= 3 &&
             !_collectionIntentWords.contains(t) &&
             !RegExp(r'^\d+$').hasMatch(t) &&
             !kMonthNames.contains(t),

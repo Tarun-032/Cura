@@ -17,7 +17,7 @@ import 'remote/remote_ai_store.dart';
 import 'remote/remote_chat_backend.dart';
 import 'retrieval.dart';
 
-/// One streamed answer chunk.
+/// A streamed answer chunk.
 class AskChunk {
   const AskChunk(
     this.text, {
@@ -31,13 +31,13 @@ class AskChunk {
   final String thinking;
   final CuraDocument? source;
 
-  /// Source cards for multi-match answers.
+  /// Source cards.
   final List<CuraDocument> sources;
   final int sourceTotal;
   final bool done;
 }
 
-/// Split model output into thinking and answer.
+/// Parsed model output.
 class _ParsedAnswer {
   const _ParsedAnswer(this.thinking, this.answer);
   final String thinking;
@@ -46,20 +46,20 @@ class _ParsedAnswer {
 
 enum ScanExtractionMode { metadata, receipt, tableRepair, labRows }
 
-/// One summary rewrite result.
+/// A summary rewrite result.
 class SummaryRewrite {
   const SummaryRewrite(this.text, {this.preempted = false});
   final String? text;
   final bool preempted;
 }
 
-/// Cancel a streaming backend.
+/// Cancel a stream.
 class GenerationCancellation {
   bool cancelled = false;
   void Function()? _stop;
   final _done = Completer<void>();
 
-  /// Completes on cancel.
+  /// Completes when cancelled.
   Future<void> get done => _done.future;
 
   void attach(void Function() stop) {
@@ -77,7 +77,7 @@ class GenerationCancellation {
   }
 }
 
-/// Stop a stream when cancelled.
+/// Stop a stream on cancel.
 Stream<T> untilCancelled<T>(
   Stream<T> source,
   GenerationCancellation? cancellation,
@@ -98,7 +98,7 @@ Stream<T> untilCancelled<T>(
   return out.stream;
 }
 
-/// Run Ask and scan refinement.
+/// Ask and scan refinement service.
 class AiService {
   AiService(
     this._manager,
@@ -115,20 +115,20 @@ class AiService {
   AiModel? _spec;
   int _layers = 0;
 
-  // Warm KV cache state.
+  // Warm KV cache.
   String? _kvSystem; // system prompt at the cache base (null = empty/dirty)
   String?
   _kvConvId; // chat/session id whose turns sit on top (null = base only)
   bool _kvOpenAnswer = false; // cache ends mid-answer (needs a close next turn)
   int _kvTokensEst = 0; // running token estimate, for the overflow guard
 
-  /// Free tokens to keep before reusing cache.
+  /// Free tokens before reuse.
   static const _kAnswerHeadroom = 128;
 
-  /// Token estimate from text length.
+  /// Token estimate from length.
   int _estTokens(String s) => (s.length / 3.5).ceil();
 
-  /// Clear the KV cache and tracker.
+  /// Clear the KV cache.
   Future<void> _clearKv() async {
     try {
       await _ctrl?.clearContext();
@@ -139,7 +139,7 @@ class AiService {
     _kvTokensEst = 0;
   }
 
-  /// Stop llama.cpp.
+  /// Stop the local model.
   void _stopLocal() {
     final ctrl = _ctrl;
     if (ctrl != null) unawaited(ctrl.stop());
@@ -152,7 +152,7 @@ class AiService {
   GenerationCancellation? _background;
   Future<void>? _backgroundDone;
 
-  /// Preempt a background rewrite.
+  /// Cancel a background rewrite.
   Future<void> _preemptBackground() async {
     _background?.cancel();
     _background = null;
@@ -161,10 +161,13 @@ class AiService {
     if (done != null) await done;
   }
 
-  /// Cloud answer ceiling.
-  static const _remoteMaxTokens = 1024;
+  /// Cloud token ceiling.
+  static const _remoteMaxTokens = 4096;
 
-  // On-device system prompt.
+  /// Scan extraction token ceiling.
+  static const _scanRemoteMaxTokens = 1024;
+
+  // On-device prompt.
   static const _systemPrompt =
       'You are Cura, the user\'s on-device medical assistant. Answer briefly, in '
       'plain language, and only about health or the documents below — for anything '
@@ -176,7 +179,7 @@ class AiService {
       'self-harm, violence, or drug misuse. You explain, not diagnose; this is '
       'not medical advice.';
 
-  // Cloud system prompt.
+  // Cloud prompt.
   static const _systemPromptRemote =
       'You are Cura — a warm, precise medical assistant that helps the user '
       'understand their own health records. You organize and explain; you do not '
@@ -245,7 +248,7 @@ class AiService {
       'none yet and to add a report and ask again; otherwise answer the health '
       'question normally.';
 
-  /// Note for a missing document type.
+  /// Missing type note.
   static const _kNoThinkPrefill = '<think>\n\n</think>\n\n';
 
   static String _missingTypeNote(String label) =>
@@ -253,7 +256,7 @@ class AiService {
       'document is in their records. Tell them it isn\'t on file; do not answer '
       'from an unrelated document.';
 
-  /// Note for focus resolution.
+  /// Focus note.
   static const _focusResolveNote =
       ' Note: several of the user\'s reports are shown below and ALL of them exist '
       'on file. Using the conversation so far, work out which single report they '
@@ -261,14 +264,22 @@ class AiService {
       'that one, naming its title and date. Never say any of the shown reports is '
       'missing or an error. If it is genuinely unclear, briefly ask which one.';
 
-  /// Note for collection requests.
+  /// List note.
+  static const _listNote =
+      ' Note: the user asked for a list. Answer with one line giving the total, '
+      'then one bullet per matching record: its title in bold, then the record '
+      'type and the date. List every matching record and skip none. Do not '
+      'describe a record\'s contents or results unless the user asked what they '
+      'show.';
+
+  /// Collection note.
   static const _collectionNote =
       ' Note: the user requested the reports shown below as a group. Cover EVERY '
       'shown report and use the supplied details for each one. Keep their dates '
       'and contents distinct. Do not choose only one, and do not say a shown '
       'report\'s details are unavailable.';
 
-  /// Note for other same-kind reports.
+  /// Same-kind note.
   static String _otherReportsNote(List<CuraDocument> others) {
     final items = others
         .map((d) => '"${d.title}" (${d.dateLabel})')
@@ -279,7 +290,7 @@ class AiService {
         'is missing, unavailable, or an error; you may offer to explain the others.';
   }
 
-  /// Infer the source from a focus answer.
+  /// Infer source from focus.
   static CuraDocument? _sourceFromAnswer(
     String answer,
     List<CuraDocument> candidates,
@@ -301,6 +312,36 @@ class AiService {
       }
     }
     return bestScore >= 2 ? best : null;
+  }
+
+  /// Cards for a cloud answer: an exact [cardSources] set when there is one,
+  /// else the reports the answer names.
+  @visibleForTesting
+  static ({List<CuraDocument> cards, int total, CuraDocument? cited})
+  cloudAnswerCards(
+    String answer, {
+    List<CuraDocument> cardSources = const [],
+    int cardTotal = 0,
+    List<CuraDocument> candidates = const [],
+    CuraDocument? source,
+    List<CuraDocument> resolveCandidates = const [],
+    String Function(CuraDocument)? aliasTitle,
+  }) {
+    final inferred = candidates.isEmpty
+        ? const <CuraDocument>[]
+        : explicitlyNamedDocumentsInOrder(
+            answer,
+            candidates,
+            aliasTitle: aliasTitle,
+          );
+    final cards = cardSources.isNotEmpty ? cardSources : inferred;
+    return (
+      cards: cards,
+      total: cardSources.isNotEmpty ? cardTotal : inferred.length,
+      cited: cards.isNotEmpty
+          ? cards.first
+          : source ?? _sourceFromAnswer(answer, resolveCandidates),
+    );
   }
 
   /// Join a list naturally.
@@ -343,12 +384,15 @@ class AiService {
       }
     }
 
-    // Compute counts locally.
-    final counted = useRemote ? routeQuestion(q, docs) : null;
-    final verifiedCount =
-        counted != null && counted.kind == RoutedAnswerKind.count
-        ? counted.text
+    // One route per cloud turn: a verified count, the exact card set, and the
+    // report to cite.
+    final cloudRoute = useRemote ? routeQuestion(q, docs) : null;
+    final verifiedCount = cloudRoute?.kind == RoutedAnswerKind.count
+        ? cloudRoute!.text
         : null;
+    final isCollectionRoute =
+        cloudRoute?.kind == RoutedAnswerKind.count ||
+        cloudRoute?.kind == RoutedAnswerKind.list;
 
     // Require a local model when needed.
     if (!useRemote && await _manager.installedModel() == null) {
@@ -449,6 +493,10 @@ class AiService {
         : !useRemote && g.otherReports.isNotEmpty
         ? '$enginePrompt${_otherReportsNote(g.otherReports)}'
         : enginePrompt;
+    // Appended, not folded in above, so the local KV cache keys off basePrompt.
+    final systemPrompt = isCollectionRoute
+        ? '$basePrompt$_listNote'
+        : basePrompt;
     // Add bounded history.
     final wantsRecall = routed == null && _recallRe.hasMatch(q.toLowerCase());
     final priorTurns = _boundedHistory(
@@ -483,12 +531,8 @@ class AiService {
         }
       }
       // Collection routes carry their local set.
-      final cardRoute = routeQuestion(q, docs);
-      final isCollectionRoute =
-          cardRoute?.kind == RoutedAnswerKind.count ||
-          cardRoute?.kind == RoutedAnswerKind.list;
       final routeCardsAreAuthoritative =
-          isCollectionRoute && cardRoute!.sourcesAreAuthoritative;
+          isCollectionRoute && cloudRoute!.sourcesAreAuthoritative;
       // Attach every matching source.
       final groundedCollectionSources =
           g.kind == GroundingKind.collection ||
@@ -496,21 +540,20 @@ class AiService {
           ? contextDocs
           : const <CuraDocument>[];
       final cardSources = routeCardsAreAuthoritative
-          ? cardRoute.sources
+          ? cloudRoute.sources
           : groundedCollectionSources;
       final cardTotal = routeCardsAreAuthoritative
-          ? cardRoute.sourceTotal
+          ? cloudRoute.sourceTotal
           : groundedCollectionSources.length;
-      final cardCandidates =
-          isCollectionRoute &&
-              !routeCardsAreAuthoritative &&
-              groundedCollectionSources.isEmpty
+      // No exact set, so infer the cards from the answer.
+      final cardCandidates = cardSources.isEmpty
           ? docs
           : const <CuraDocument>[];
       yield* _answerRemote(
-        source,
+        // The route's pick is the fallback citation.
+        source ?? cloudRoute?.source,
         resolveCandidates,
-        basePrompt,
+        systemPrompt,
         safePriorTurns,
         userContent,
         knownIdentityTerms: cloudIdentityTerms,
@@ -927,29 +970,28 @@ class AiService {
         knownIdentityTerms: knownIdentityTerms,
       ),
     );
-    // Infer the cited report when the model resolved among several attached ones.
-    final inferredCards = cardCandidates.isEmpty
-        ? const <CuraDocument>[]
-        : explicitlyNamedDocumentsInOrder(p.answer, cardCandidates);
-    final finalCards = cardSources.isNotEmpty ? cardSources : inferredCards;
-    final finalCardTotal = cardSources.isNotEmpty
-        ? cardTotal
-        : inferredCards.length;
-    final cited = finalCards.isNotEmpty
-        ? finalCards.first
-        : source ?? _sourceFromAnswer(p.answer, resolveCandidates);
+    // safeTitle is the spelling the inventory gave the model.
+    final picked = cloudAnswerCards(
+      p.answer,
+      cardSources: cardSources,
+      cardTotal: cardTotal,
+      candidates: cardCandidates,
+      source: source,
+      resolveCandidates: resolveCandidates,
+      aliasTitle: privacyGate.safeTitle,
+    );
     if (cardCandidates.isNotEmpty) {
       debugPrint(
-        '[Cura.ai] collection sources candidates=${cardCandidates.length} '
-        'named=${inferredCards.length}',
+        '[Cura.ai] inferred sources candidates=${cardCandidates.length} '
+        'named=${picked.cards.length}',
       );
     }
     yield AskChunk(
       p.answer,
       thinking: p.thinking,
-      source: cited,
-      sources: finalCards,
-      sourceTotal: finalCardTotal,
+      source: picked.cited,
+      sources: picked.cards,
+      sourceTotal: picked.total,
       done: true,
     );
   }
@@ -1474,7 +1516,7 @@ class AiService {
     ScanExtractionMode.receipt => 128,
     // A whole table, not a two-field header.
     ScanExtractionMode.tableRepair ||
-    ScanExtractionMode.labRows => _remoteMaxTokens,
+    ScanExtractionMode.labRows => _scanRemoteMaxTokens,
   };
 
   final ScanService _scan = ScanService();

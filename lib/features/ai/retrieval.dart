@@ -1,9 +1,9 @@
 import '../library/document.dart';
 import 'remote/pii_redactor.dart' show keepMedicalLines;
 
-/// On-device keyword retrieval over saved documents.
+/// Local keyword retrieval.
 
-/// Words with no retrieval signal.
+/// Stopwords.
 const _stopwords = {
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'is', 'are',
   'was',
@@ -52,9 +52,12 @@ List<String> _terms(String text) {
       .toList();
 }
 
+/// Question terms used for ranking.
+List<String> queryTerms(String text) => _terms(text);
+
 const _monthNames = kMonthNames;
 
-/// Month names, January = index 0.
+/// Month names.
 const kMonthNames = [
   'january',
   'february',
@@ -98,7 +101,7 @@ String _ordinal(int n) {
   }
 }
 
-/// Date tokens for a document.
+/// Document date tokens.
 String _dateTokens(DateTime d) {
   final m = d.month;
   final day = d.day;
@@ -114,7 +117,7 @@ String _dateTokens(DateTime d) {
   ].join(' ');
 }
 
-/// The lowercased, searchable haystack for a document.
+/// Searchable document text.
 String _haystack(CuraDocument d) {
   final b = StringBuffer()
     ..write(d.title)
@@ -142,7 +145,7 @@ String _haystack(CuraDocument d) {
   return b.toString().toLowerCase();
 }
 
-/// Date mentioned in a question.
+/// Date in the question.
 class QueryDate {
   const QueryDate(this.month, this.day, this.year);
   final int? month;
@@ -154,7 +157,7 @@ class QueryDate {
   bool get hasAny => month != null || year != null;
 }
 
-/// Parse a date mention from the question.
+/// Parse a date mention.
 QueryDate parseQueryDate(String q) {
   final lower = q.toLowerCase();
   int? month;
@@ -179,7 +182,7 @@ QueryDate parseQueryDate(String q) {
   return QueryDate(month, day, year);
 }
 
-/// Rank documents by question overlap.
+/// Rank docs by overlap.
 List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
   final terms = _terms(question);
   final qd = parseQueryDate(question);
@@ -215,7 +218,7 @@ List<ScoredDoc> rankDocuments(String question, List<CuraDocument> docs) {
   return scored;
 }
 
-/// Pick the documents to send to the model.
+/// Pick docs for the model.
 List<CuraDocument> selectContext(
   String question,
   List<CuraDocument> docs, {
@@ -227,8 +230,7 @@ List<CuraDocument> selectContext(
   final top = ranked.isEmpty ? 0 : ranked.first.score;
   List<CuraDocument> picked;
   if (top > 0) {
-    // Keep only clearly-relevant docs (near the top score), so a specific
-    // question doesn't drag in every weakly-matching document.
+    // Keep only clearly relevant docs.
     final threshold = top <= 2 ? top : (top / 2).ceil();
     picked = ranked
         .where((s) => s.score >= threshold)
@@ -250,8 +252,7 @@ List<CuraDocument> selectContext(
   return out;
 }
 
-/// Max chars of narrative OCR / medical excerpt attached when a doc has no
-/// Results rows. Large enough for Findings/Impression; still bounded for prefill.
+/// Max chars for narrative context.
 const kNarrativeContextChars = 2500;
 
 /// Builds the model-facing context for [docs]. With [includeRawText] false
@@ -985,25 +986,32 @@ List<CuraDocument> mentionedDocumentsInOrder(
   return [for (final match in matches) match.document];
 }
 
-/// Saved documents explicitly identified in a collection answer, in display
-/// order. Stricter than conversational focus: a complete normalized title is
-/// required, and duplicate titles also need the date on the same line. An
-/// ambiguous match shows no card. This is how a semantic cloud collection
-/// ("TB-related", "kidney") maps back to local documents.
+/// Documents an answer names, in display order. Needs a complete title, a
+/// unique date, or both when the title repeats. [aliasTitle] is a second name
+/// to accept, for the privacy-safe title the cloud model was given.
 List<CuraDocument> explicitlyNamedDocumentsInOrder(
   String text,
-  List<CuraDocument> docs,
-) {
+  List<CuraDocument> docs, {
+  String Function(CuraDocument)? aliasTitle,
+}) {
   if (text.trim().isEmpty || docs.isEmpty) return const [];
 
   final byTitle = <String, List<CuraDocument>>{};
   final byIdentity = <String, List<CuraDocument>>{};
+  final byDate = <String, List<CuraDocument>>{};
   for (final document in docs) {
-    final title = _normalizeReferenceText(document.title).trim();
-    if (title.length < 3) continue;
     final date = _normalizeReferenceText(document.dateLabel).trim();
-    byTitle.putIfAbsent(title, () => []).add(document);
-    byIdentity.putIfAbsent('$title|$date', () => []).add(document);
+    if (date.isNotEmpty) byDate.putIfAbsent(date, () => []).add(document);
+    final names = {
+      _normalizeReferenceText(document.title).trim(),
+      if (aliasTitle != null)
+        _normalizeReferenceText(aliasTitle(document)).trim(),
+    };
+    for (final title in names) {
+      if (title.length < 3) continue;
+      byTitle.putIfAbsent(title, () => []).add(document);
+      byIdentity.putIfAbsent('$title|$date', () => []).add(document);
+    }
   }
 
   final matches = <({int index, int end, CuraDocument document})>[];
@@ -1011,6 +1019,7 @@ List<CuraDocument> explicitlyNamedDocumentsInOrder(
   for (final rawLine in text.split('\n')) {
     final line = _normalizeReferenceText(rawLine).trim();
     if (line.isNotEmpty) {
+      var titled = false;
       for (final entry in byTitle.entries) {
         final title = entry.key;
         final titleIndex = line.indexOf(title);
@@ -1032,11 +1041,27 @@ List<CuraDocument> explicitlyNamedDocumentsInOrder(
           document = dated.single;
         }
 
+        titled = true;
         matches.add((
           index: lineOffset + titleIndex,
           end: lineOffset + titleIndex + title.length,
           document: document,
         ));
+      }
+
+      // No title matched, so fall back to a date only one report carries. This
+      // catches a title the model shortened ("MTB/RIF" for "Xpert MTB/RIF").
+      if (!titled) {
+        for (final entry in byDate.entries) {
+          if (entry.value.length != 1) continue;
+          final dateIndex = line.indexOf(entry.key);
+          if (dateIndex < 0) continue;
+          matches.add((
+            index: lineOffset + dateIndex,
+            end: lineOffset + dateIndex + entry.key.length,
+            document: entry.value.single,
+          ));
+        }
       }
     }
     lineOffset += line.length + 1;

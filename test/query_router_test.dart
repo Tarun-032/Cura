@@ -432,6 +432,22 @@ void main() {
         isFalse,
       );
     });
+
+    test('a stopword is not a qualifier that narrows to nothing', () {
+      // "were" scoped every document to 0 and answered "no matching records".
+      final recent = routeQuestion('what were my recent results?', _docs)!;
+      expect(recent.kind, RoutedAnswerKind.latest);
+      expect(recent.source?.id, 'cbc'); // newest
+      expect(recent.text, contains('Complete blood count'));
+
+      final latest = routeQuestion('what was my latest report?', _docs)!;
+      expect(latest.kind, RoutedAnswerKind.latest);
+      expect(latest.source?.id, 'cbc');
+
+      final others = routeQuestion('list my other reports', _docs)!;
+      expect(others.kind, RoutedAnswerKind.list);
+      expect(others.sources.length, _docs.length);
+    });
   });
 
   group('modality-aware imaging (count / latest / list)', () {
