@@ -1,10 +1,8 @@
 import '../library/document.dart';
 import 'table_parser.dart' show OcrGeometryPage, OcrLine;
 
-/// Deterministic bill reader. A purchased item is accepted only when its name
-/// sits in the printed item/description column and its value sits in the
-/// printed amount column on the same visual row. The language model may later
-/// clean a label, but it is never allowed to invent or re-pair these numbers.
+/// Deterministic bill reader. Item names must match the item column and values
+/// must match the amount column on the same row.
 
 final _moneyRe = RegExp(
   r'(?:(?:₹|\brs\b\.?|\binr\b)\s*\d[\d,]*(?:\.\d{1,2})?|'
@@ -29,9 +27,10 @@ final _amountHeaderRe = RegExp(
 );
 
 final _otherHeaderRe = RegExp(
+  // "For" opens the signature block ("For ALOK MEDICAL STORES"), never an item.
   r'^(s\.?\s*no|sr\.?|qty|quantity|mrp|rate|tariff|department|dept|comp|'
   r'company|manufacturer|mfr|batch|expiry|exp|gst|cgst|sgst|igst|discount|'
-  r'dis\s*\(?%?\)?|amount|total)$',
+  r'dis\s*\(?%?\)?|amount|total|for)$',
   caseSensitive: false,
 );
 
@@ -63,13 +62,36 @@ final _ignoredSummaryRe = RegExp(
   caseSensitive: false,
 );
 
-/// Administrative text that must never become a purchased item. Structural
-/// rather than vendor-specific: registrations, locations, contacts, payment
-/// prose, greetings and table headers are noise on every bill.
+
+final _trailingSummaryRe = RegExp(
+  r'(grand\s*total|net(?:\s*(?:payable|amount))?|'
+  r'final(?:\s*(?:payment|amount))?|total\s*bill\s*amount|bill\s*amount|'
+  r'amount\s*(?:paid|payable)|total|payable|paid|balance|sub\s*-?\s*total|'
+  r'gross|service\s*amount|cgst|sgst|igst|gst\s*tax|vat|tax|discount|less|'
+  r'round\s*off|rounding)\s*:?\s*$',
+  caseSensitive: false,
+);
+
+
+final _embeddedSummaryFieldRe = RegExp(
+  r'\b(grand\s*total|net|final|bill\s*amount|amount|total|payable|paid|balance|'
+  r'sub\s*-?\s*total|gross|service\s*amount|cgst|sgst|igst|gst\s*tax|vat|tax|'
+  r'discount|less|round\s*off)\s*[:=]\s*(?:₹|rs\.?)?\s*\d',
+  caseSensitive: false,
+);
+
+final _textTotalRe = RegExp(
+  r'(?:^|[^A-Za-z])(grand\s*total|net(?:\s*(?:payable|amount))?|'
+  r'final\s*(?:payment|amount)|total\s*bill\s*amount|bill\s*amount|'
+ 
+  r'amount\s*(?:paid|payable)|total)\s*[:=]?\s*(?:₹|rs\.?)?\s*'
+  r'([\d,]+(?:\.\d{2})?)(?![\d.])',
+  caseSensitive: false,
+);
+
 final _administrativeRe = RegExp(
   r'(?:^|\b)(?:gst\s*(?:no|number|in)|gstin|pan|tan|cin|uin|tin|'
-  // "Registration Fee" is a genuine charge; only registration *numbers* are
-  // administrative.
+  
   r'd\.?\s*l\.?\s*(?:no|number)|drug\s*lic|licen[cs]e\s*(?:no|number)|'
   r'reg(?:istration|d|n)?\.?\s*(?:no|number)\b|'
   r'inv(?:oice)?\s*(?:no|number)|bill\s*(?:no|number)|receipt\s*(?:no|number)|'
@@ -129,6 +151,15 @@ class _TableHeader {
   final double amountX;
 }
 
+/// The summary label a group names, as its whole text or as its tail.
+({String label, _RowClass kind})? _groupSummary(String text) {
+  final whole = _summaryClass(text);
+  if (whole != null) return (label: _clean(text), kind: whole);
+  final tail = _trailingSummaryRe.firstMatch(text)?.group(1);
+  final kind = tail == null ? null : _summaryClass(tail);
+  return kind == null ? null : (label: _clean(tail!), kind: kind);
+}
+
 _RowClass? _summaryClass(String label) {
   final clean = _clean(label);
   if (_totalLabelRe.hasMatch(clean)) return _RowClass.total;
@@ -138,10 +169,7 @@ _RowClass? _summaryClass(String label) {
   return _fuzzySummaryClass(clean);
 }
 
-/// OCR mangles "Total Bill Amount" differently on every scan of the same page,
-/// defeating the anchored classes above. This last line of defence matches each
-/// word fuzzily: a short label made almost entirely of near-misses is a summary
-/// row, never a purchase.
+
 const _totalVocab = [
   'total',
   'bill',
@@ -182,10 +210,9 @@ bool _fuzzyWordEq(String word, String target) {
 }
 
 _RowClass? _fuzzySummaryClass(String clean) {
-  final words = RegExp(r'[A-Za-z]{3,}')
-      .allMatches(clean)
-      .map((match) => match.group(0)!.toLowerCase())
-      .toList();
+  final words = RegExp(
+    r'[A-Za-z]{3,}',
+  ).allMatches(clean).map((match) => match.group(0)!.toLowerCase()).toList();
   if (words.length < 2 || words.length > 5) return null;
   var totalHits = 0;
   var subHits = 0;
@@ -197,14 +224,12 @@ _RowClass? _fuzzySummaryClass(String clean) {
     }
   }
   final hits = totalHits + subHits;
-  // Nearly every word must be money vocabulary: "Total Knee Replacement"
-  // stays an item question, "loal Bil Amount" does not.
+ 
   if (hits < 2 || hits < words.length - 1) return null;
   return subHits > totalHits ? _RowClass.subtotal : _RowClass.total;
 }
 
-/// Strong wording decides immediately. Weaker billing signals need at least
-/// two matches so a laboratory page containing only "Bill No" stays a lab.
+
 bool looksLikeBill(String text) {
   final lower = text.toLowerCase();
   if (RegExp(
@@ -228,9 +253,6 @@ bool looksLikeBill(String text) {
   return weak >= 2;
 }
 
-/// Reads item/amount pairs and summary amounts from OCR geometry. Word-level
-/// [geometry] preserves true columns when ML Kit merges a printed row into one
-/// TextLine; callers may omit it and use line boxes instead.
 List<DocumentResult> parseReceiptBreakdown(
   List<OcrLine> lines, {
   OcrGeometryPage? geometry,
@@ -280,18 +302,16 @@ List<DocumentResult> parseReceiptBreakdown(
     final rowTokens = tokens.where((token) => token.row == rowIndex).toList();
     if (rowTokens.isEmpty) continue;
 
-    final summaryGroup = rowGroups.cast<_TextGroup?>().firstWhere(
-      (group) => group != null && _summaryClass(group.text) != null,
-      orElse: () => null,
-    );
-    if (summaryGroup != null) {
-      final kind = _summaryClass(summaryGroup.text)!;
-      if (_ignoredSummaryRe.hasMatch(_clean(summaryGroup.text))) continue;
+    ({String label, _RowClass kind})? summary;
+    for (final group in rowGroups) {
+      summary = _groupSummary(group.text);
+      if (summary != null) break;
+    }
+    if (summary != null) {
+      if (_ignoredSummaryRe.hasMatch(summary.label)) continue;
       final amount = rowTokens.reduce((a, b) => a.x >= b.x ? a : b);
       if ((_amountValue(amount.text) ?? 0) == 0) continue;
-      parsed.add(
-        _BillRow(_clean(summaryGroup.text), amount.text, kind, rowIndex),
-      );
+      parsed.add(_BillRow(summary.label, amount.text, summary.kind, rowIndex));
       continue;
     }
 
@@ -361,9 +381,7 @@ List<List<OcrLine>> _visualRows(List<OcrLine> pieces) {
 
 List<_TextGroup> _groupsForRow(List<OcrLine> row, double pageWidth) {
   if (row.isEmpty) return const [];
-  // Camera photos are ~3500 px wide and fixtures ~900, so an absolute pixel cap
-  // can't serve both. Text height scales with resolution, and a column gap is
-  // always wider than ~1.2 line heights while word spaces are far narrower.
+ 
   final heights = [for (final piece in row) (piece.bottom - piece.top).abs()]
     ..sort();
   final rowHeight = heights[heights.length ~/ 2].clamp(1.0, double.infinity);
@@ -486,7 +504,7 @@ Set<_MoneyToken> _amountColumnTokens(
 
 int? _firstSummaryRow(List<List<_TextGroup>> groups, {required int after}) {
   for (var i = after + 1; i < groups.length; i++) {
-    if (groups[i].any((group) => _summaryClass(group.text) != null)) return i;
+    if (groups[i].any((group) => _groupSummary(group.text) != null)) return i;
   }
   return null;
 }
@@ -537,6 +555,7 @@ bool isPlausibleReceiptItemLabel(String label) {
   if (_summaryClass(clean) != null ||
       _ignoredSummaryRe.hasMatch(clean) ||
       _administrativeRe.hasMatch(clean) ||
+      _embeddedSummaryFieldRe.hasMatch(clean) ||
       _otherHeaderRe.hasMatch(clean)) {
     return false;
   }
@@ -549,7 +568,6 @@ List<DocumentResult> _shapeReceiptRows(
   List<_BillRow> parsed, {
   required String pageText,
 }) {
-  if (parsed.isEmpty) return const [];
   final totals = parsed.where((row) => row.kind == _RowClass.total).toList();
   _BillRow? finalAmount;
   if (totals.isNotEmpty) {
@@ -564,6 +582,9 @@ List<DocumentResult> _shapeReceiptRows(
         .toList();
     if (subtotals.isNotEmpty) finalAmount = subtotals.last;
   }
+  // OCR merges a right-hand summary column into the signature block beside it,
+  // and the whole band then reads as one item row. The printed line survives.
+  finalAmount ??= _textFinalAmount(pageText);
   final finalValue = finalAmount == null
       ? null
       : _amountValue(finalAmount.amountText);
@@ -598,6 +619,20 @@ List<DocumentResult> _shapeReceiptRows(
   }
   if (finalAmount != null) emit('Final amount', finalAmount.amountText);
   return output;
+}
+
+/// The best-named printed total in [pageText]: NET beats Total beats the rest.
+_BillRow? _textFinalAmount(String pageText) {
+  _BillRow? best;
+  for (final match in _textTotalRe.allMatches(pageText)) {
+    final label = _clean(match.group(1)!);
+    final amount = match.group(2)!;
+    if ((_amountValue(amount) ?? 0) == 0) continue;
+    if (best == null || _totalPriority(label) > _totalPriority(best.label)) {
+      best = _BillRow(label, amount, _RowClass.total, 0);
+    }
+  }
+  return best;
 }
 
 int _totalPriority(String label) {

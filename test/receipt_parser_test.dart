@@ -1,6 +1,4 @@
-// Unit tests for the geometry-based bill reader, modeled on two real documents:
-// an OP cash bill (one service row, the same total printed under five names) and
-// a pharmacy GST invoice (only the rightmost money column is the amount).
+
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -184,9 +182,7 @@ void main() {
   });
 
   group('parseReceiptBreakdown — layout noise (real pharmacy failures)', () {
-    // Footer and registration lines share visual rows with the summary amounts,
-    // and comp/batch cells sit beside the MRP column. Amount-column locking,
-    // keyword-owned summary labels and the id filter must exclude all of it.
+   
     final lines = <OcrLine>[
       _l('BALBACK PRO 60ML', 100, 100, 260),
       _l('1440.00', 300, 100, 360), // MRP column
@@ -242,6 +238,40 @@ void main() {
         _l('500.00', 400, 140, 460),
       ], pageText: 'cash memo');
       expect(rows.map((r) => r.label).toList(), ['Dressing', 'Final amount']);
+    });
+
+    test('a summary label OCR left at the tail of the signature block', () {
+     
+      final rows = parseReceiptBreakdown([
+        _l('Product Name', 120, 100, 260),
+        _l('Amount', 800, 100, 900),
+        _l('BALBACK PRO 60ML', 120, 160, 320),
+        _l('1440.00', 800, 160, 900),
+        _l('For FENWICKJYEDICAL STORES Gross :', 400, 220, 700),
+        _l('1956.10', 800, 220, 900),
+        _l('Regd. Pharmacist NET :', 400, 260, 700),
+        _l('1956.00', 800, 260, 900),
+      ], pageText: 'GST INVOICE');
+      expect(rows.map((r) => r.label).toList(), [
+        'BALBACK PRO 60ML',
+        'Gross',
+        'Final amount',
+      ]);
+      expect(rows.last.value, '₹1956.00');
+    });
+
+    test('the printed total is read from the text when geometry loses it', () {
+      final rows = parseReceiptBreakdown([
+        _l('Product Name', 120, 100, 260),
+        _l('Amount', 800, 100, 900),
+        _l('BALBACK PRO 60ML', 120, 160, 320),
+        _l('1440.00', 800, 160, 900),
+      ], pageText: 'GST INVOICE\nGross : 1956.10\nNET : 1956.00\n');
+      expect(rows.map((r) => r.label).toList(), [
+        'BALBACK PRO 60ML',
+        'Final amount',
+      ]);
+      expect(rows.last.value, '₹1956.00');
     });
   });
 
@@ -420,10 +450,9 @@ void main() {
         _l('NET :', 600, 500, 650),
         _l('1956.00', 870, 500, 935),
       ];
-      final labels = parseReceiptBreakdown(
-        [for (final l in base) scale(l, 3.7)],
-        pageText: 'GST INVOICE',
-      ).map((r) => r.label).toList();
+      final labels = parseReceiptBreakdown([
+        for (final l in base) scale(l, 3.7),
+      ], pageText: 'GST INVOICE').map((r) => r.label).toList();
       expect(labels, ['BALBACK PRO 60ML', 'Final amount']);
     });
 
