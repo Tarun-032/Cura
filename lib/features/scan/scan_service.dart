@@ -1190,7 +1190,7 @@ final _summaryIdentitySpan = RegExp(
 
 final _summaryAdministrativeFooter = RegExp(
   r'\b(?:will\s+be\s+(?:stored|discarded|destroyed)|retained\s+for|'
-  r'electronically\s+signed|end\s+of\s+report)\b',
+  r'electronically\s+signed|end\s+of\s+(?:the\s+)?report)\b',
   caseSensitive: false,
 );
 

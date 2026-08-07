@@ -263,6 +263,18 @@ Reprinted On: 01/07/2025 4:44 PM
       );
     });
 
+    test('the signature block after "END OF THE REPORT" is dropped', () {
+      const text =
+          'Impression:\n'
+          'Underlying muscles appear normal.\n'
+          '---END OF THE REPORT---\n'
+          'MD Radiodiagnosis\n';
+      final summary = svc.extractFindingsSummary(text)!;
+      expect(summary, isNot(contains('END OF')));
+      expect(summary, isNot(contains('Radiodiagnosis')));
+      expect(summary, contains('Underlying muscles appear normal.'));
+    });
+
     test('a trailing empty heading is dropped', () {
       const text =
           'Impression: Benign.\n'
