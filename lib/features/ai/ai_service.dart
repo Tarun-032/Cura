@@ -1497,7 +1497,8 @@ class AiService {
           ),
         ],
         temperature: 0.0,
-        maxTokens: _scanMaxTokens(mode),
+        
+        maxTokens: _scanRemoteMaxTokens,
       )) {
         if (cancellation.cancelled) break;
         buf.write(tok);
@@ -1511,6 +1512,7 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
+  /// On-device ceiling. The local model never emits hidden reasoning.
   static int _scanMaxTokens(ScanExtractionMode mode) => switch (mode) {
     ScanExtractionMode.metadata => 128,
     ScanExtractionMode.receipt => 128,
@@ -1521,16 +1523,13 @@ class AiService {
 
   final ScanService _scan = ScanService();
 
-  /// Detects "summarize/recall the conversation" questions, which need a wider
-  /// history window than an ordinary follow-up.
+
   static final _recallRe = RegExp(
     r'\b(summar(y|ize|ise)|recap|so far|this (chat|session|conversation)|'
     r'earlier|we (talk|talked|discuss|discussed|said)|what did (we|i|you))\b',
   );
 
-  /// Trims [history] to the newest turns that fit the budget, capping both chars
-  /// and turn count, then restores chronological order. The window is small by
-  /// default for fast prefill and wider for summary/recall questions.
+  
   List<({String role, String text})> _boundedHistory(
     List<({String role, String text})> history, {
     required int maxChars,
@@ -1550,9 +1549,7 @@ class AiService {
     return kept.reversed.toList();
   }
 
-  /// Splits raw model output into (reasoning, answer) on `<think>…</think>`.
-  /// Until the closing tag arrives everything is in-progress reasoning; output
-  /// with no think tags is all answer.
+  /// Splits model output into reasoning/answer using `<think>...</think>`.
   _ParsedAnswer _split(String raw) {
     var text = raw
         .replaceAll('\\n', '\n')
@@ -1591,9 +1588,7 @@ class AiService {
     _spec = spec;
     final path = await _manager.modelPath(spec);
 
-    // Vulkan offload only when the plugin's detector recommends it: mid-range
-    // Mali GPUs are often no faster than the CPU at this model size. A failed GPU
-    // load falls back to CPU; the layer count is in the [Cura.ai] timing line.
+    // Use Vulkan offload only when recommended; otherwise fall back to CPU.
     var layers = 0;
     final probe = LlamaController();
     try {
