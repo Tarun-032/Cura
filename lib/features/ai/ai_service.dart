@@ -164,9 +164,6 @@ class AiService {
   /// Cloud token ceiling.
   static const _remoteMaxTokens = 4096;
 
-  /// Scan extraction token ceiling.
-  static const _scanRemoteMaxTokens = 1024;
-
   // On-device prompt.
   static const _systemPrompt =
       'You are Cura, the user\'s on-device medical assistant. Answer briefly, in '
@@ -1201,7 +1198,7 @@ class AiService {
             ),
           ],
           temperature: 0.2,
-          maxTokens: _kRewriteMaxTokens,
+          maxTokens: _kRemoteRewriteMaxTokens,
         ),
         cancellation,
       )) {
@@ -1215,10 +1212,13 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
+  /// On-device rewrite ceiling: 5 to 8 sentences, no hidden reasoning.
   static const _kRewriteMaxTokens = 768;
 
-  /// Starts one cancellable request and returns its field targets immediately.
-  /// Null means this document/engine combination is entirely deterministic.
+  /// Remote rewrite ceiling: 5 to 8 sentences, with hidden reasoning.
+  static const _kRemoteRewriteMaxTokens = 2048;
+
+  
   ScanRefinementJob? startDocumentRefinement(
     String ocrText, {
     required DocumentType draftType,
@@ -1497,8 +1497,8 @@ class AiService {
           ),
         ],
         temperature: 0.0,
-        
-        maxTokens: _scanRemoteMaxTokens,
+
+        maxTokens: _scanRemoteMaxTokens(mode),
       )) {
         if (cancellation.cancelled) break;
         buf.write(tok);
@@ -1512,24 +1512,25 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
-  /// On-device ceiling. The local model never emits hidden reasoning.
+  static int _scanRemoteMaxTokens(ScanExtractionMode mode) => switch (mode) {
+    ScanExtractionMode.metadata || ScanExtractionMode.receipt => 1024,
+    ScanExtractionMode.tableRepair || ScanExtractionMode.labRows => 4096,
+  };
+
+  /// On-device ceiling. 
   static int _scanMaxTokens(ScanExtractionMode mode) => switch (mode) {
-    ScanExtractionMode.metadata => 128,
-    ScanExtractionMode.receipt => 128,
+    ScanExtractionMode.metadata || ScanExtractionMode.receipt => 128,
     // A whole table, not a two-field header.
-    ScanExtractionMode.tableRepair ||
-    ScanExtractionMode.labRows => _scanRemoteMaxTokens,
+    ScanExtractionMode.tableRepair || ScanExtractionMode.labRows => 1024,
   };
 
   final ScanService _scan = ScanService();
-
 
   static final _recallRe = RegExp(
     r'\b(summar(y|ize|ise)|recap|so far|this (chat|session|conversation)|'
     r'earlier|we (talk|talked|discuss|discussed|said)|what did (we|i|you))\b',
   );
 
-  
   List<({String role, String text})> _boundedHistory(
     List<({String role, String text})> history, {
     required int maxChars,

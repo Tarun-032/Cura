@@ -159,7 +159,8 @@ class RemoteChatBackend {
         ),
       ],
       temperature: 0,
-      maxTokens: 5,
+      // Room for a reasoning model to think before it can answer at all.
+      maxTokens: 512,
     )) {
       buf.write(tok);
     }
@@ -201,8 +202,8 @@ class RemoteChatBackend {
     // retry gets around — spell out the ways forward so a 429 isn't a dead end.
     final freeModelHint = _isOpenRouter && status == 429
         ? ' Free models are capped (about 50 requests/day and 20/min, shared '
-            'across all free models). Add a little credit to raise the cap, pick '
-            'a paid model, or switch provider (e.g. Groq) in Settings.'
+              'across all free models). Add a little credit to raise the cap, pick '
+              'a paid model, or switch provider (e.g. Groq) in Settings.'
         : '';
 
     switch (status) {
@@ -386,6 +387,12 @@ Stream<String> parseSseContent(Stream<String> lines) async* {
               ? 'The cloud model stopped with an error.'
               : 'The cloud model stopped: ${err!.message}',
         );
+      }
+      // Only delta.content is read, so hidden reasoning is invisible and the
+      // budget it spent is unmeasurable. This is the one signal that the cap,
+      // not the model, ended the answer.
+      if (first is Map && first['finish_reason'] == 'length') {
+        debugPrint('[Cura.ai] cloud output cut at max_tokens');
       }
       final delta = first is Map ? first['delta'] : null;
       final content = delta is Map ? delta['content'] : null;
