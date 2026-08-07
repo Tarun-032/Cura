@@ -250,6 +250,19 @@ Reprinted On: 01/07/2025 4:44 PM
       expect(summary, contains('epithelioid granulomas'));
     });
 
+    test('a ruled underline is not a body and not a finding', () {
+      const text =
+          'Impression:-=====\n'
+          'Real time study was done with a high frequency transducer.\n'
+          '=====\n';
+      final summary = svc.extractFindingsSummary(text)!;
+      expect(
+        summary,
+        'Impression:\nReal time study was done with a '
+        'high frequency transducer.',
+      );
+    });
+
     test('a trailing empty heading is dropped', () {
       const text =
           'Impression: Benign.\n'
