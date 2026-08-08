@@ -4,7 +4,7 @@ import 'package:cura/features/ask/chat_repository.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Re-asking a question drops its old turn; everything before must survive.
+/// Re-asking drops the old turn.
 void main() {
   late AppDatabase database;
   late ChatRepository repository;
@@ -66,6 +66,42 @@ void main() {
     await repository.deleteTrailingMessages(session.id, 99);
 
     expect(await repository.loadMessages(session.id), isEmpty);
+  });
+
+  test('a model notice survives the round trip on the same schema', () async {
+    final session = await repository.createSession('Blood work');
+    await repository.addMessage(session.id, ChatRole.notice, 'LFM2.5 (1.2B)');
+    await repository.addMessage(session.id, ChatRole.user, 'Anything odd?');
+
+    final saved = await repository.loadMessages(session.id);
+    expect(saved.first.role, ChatRole.notice);
+    expect(saved.first.text, 'LFM2.5 (1.2B)');
+    expect(lastRecordedModel(saved), 'LFM2.5 (1.2B)');
+  });
+
+  test('a notice counts as one row when a question is re-asked', () async {
+    final session = await repository.createSession('Blood work');
+    for (final turn in [
+      (ChatRole.notice, 'LFM2.5 (1.2B)'),
+      (ChatRole.user, 'What is my haemoglobin?'),
+      (ChatRole.assistant, 'It is 14.2 g/dL.'),
+      (ChatRole.notice, 'openai/gpt-oss-120b'),
+      (ChatRole.user, 'Say that again'),
+      (ChatRole.assistant, 'It is 14.2 g/dL.'),
+    ]) {
+      await repository.addMessage(session.id, turn.$1, turn.$2);
+    }
+
+    // Re-asking the second question drops it and its answer, and nothing else.
+    await repository.deleteTrailingMessages(session.id, 2);
+
+    final left = await repository.loadMessages(session.id);
+    expect(left.map((m) => m.text), [
+      'LFM2.5 (1.2B)',
+      'What is my haemoglobin?',
+      'It is 14.2 g/dL.',
+      'openai/gpt-oss-120b',
+    ]);
   });
 
   test('another conversation is untouched', () async {

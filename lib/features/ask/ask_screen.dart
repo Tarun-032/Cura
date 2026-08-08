@@ -25,10 +25,10 @@ import 'chat_models.dart';
 import 'voice_input_controller.dart';
 import 'voice_model_sheet.dart';
 
-/// Voice-input UI phase for the composer mic.
+/// Voice input state.
 enum _VoiceState { idle, recording, transcribing }
 
-/// One chat message.
+/// A chat message.
 class ChatMessage {
   const ChatMessage({
     required this.role,
@@ -49,7 +49,7 @@ class ChatMessage {
   /// Main cited document.
   final CuraDocument? source;
 
-  /// Source cards for multi-match answers.
+  /// Source cards.
   final List<CuraDocument> sources;
 
   /// Validated match count.
@@ -58,10 +58,10 @@ class ChatMessage {
   /// Reasoning text.
   final String? thinking;
 
-  /// Reasoning is streaming.
+  /// Reasoning is active.
   final bool thinkingActive;
 
-  /// Reasoning time in seconds.
+  /// Reasoning time.
   final int? thinkingSeconds;
 
   ChatMessage copyWith({
@@ -99,8 +99,7 @@ class AskScreen extends ConsumerStatefulWidget {
   final AskPromptSet prompts;
   final ValueChanged<CuraDocument> onOpenDocument;
 
-  /// Opens the Settings tab (Ask is a pushed screen over Home) so the user can
-  /// set up an on-device or cloud model when none is ready yet.
+  /// Opens Settings when no model is ready.
   final VoidCallback onOpenSettings;
 
   @override
@@ -111,7 +110,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
 
-  // Follow the active answer while it streams.
+  // Follow the active answer.
   bool _following = true;
 
   // A finger is on the thread.
@@ -120,15 +119,17 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   // On-device voice input.
   final _voice = VoiceInputController();
   _VoiceState _voiceState = _VoiceState.idle;
-  // Live mic level for the waveform.
+  // Mic level for the waveform.
   Stream<double>? _amplitude;
 
   final List<ChatMessage> _messages = [];
-  String? _sessionId; // null = fresh, unsaved conversation
+  String? _sessionId; // null = fresh chat
+  // The model label already recorded for this session.
+  String? _sessionModel;
   bool _showSuggestions = true;
   bool _busy = false;
 
-  // Stop the model itself.
+  // Stop the active model.
   GenerationCancellation? _cancel;
 
   // Bump on each send and stop.
@@ -155,8 +156,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   // Reveal step for cloud answers.
   static const _kCloudRevealStep = 3;
 
-  // Reasoning stream (reasoning models only): the hidden chain, shown live in the
-  // collapsible thinking panel. Not typewritten — it updates raw as it grows.
+  // Reasoning stream for thinking models.
   String _streamThinking = '';
   bool _thinkingActive = false;
   DateTime? _thinkingStart;
@@ -165,7 +165,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   @override
   void initState() {
     super.initState();
-    // Start a fresh chat each time Ask opens.
+    // Start a fresh chat.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _ensureAiReady();
     });
@@ -217,8 +217,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       ),
     );
     if (!mounted) return;
-    // Either way we leave Ask (it's unusable without an engine); on "Open
-    // Settings" we also switch Home to the Settings tab.
+    // Leave Ask when no engine is ready.
     Navigator.of(context).maybePop();
     if (openSettings == true) widget.onOpenSettings();
   }
@@ -230,9 +229,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     return null;
   }
 
-  /// Rebuilds a persisted message, decoding its cited source(s). A multi-source
-  /// count restores its card list; a single id restores one card (legacy rows
-  /// too). Ids that no longer resolve (deleted docs) are dropped.
+  /// Restores a saved message and its cited sources.
   ChatMessage _restoreMessage(StoredMessage s, List<CuraDocument> docs) {
     if (s.sourceDocId == null) {
       return ChatMessage(role: s.role, text: s.text);
@@ -244,8 +241,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       text: s.text,
       source: resolved.isEmpty ? null : resolved.first,
       sources: resolved.length > 1 ? resolved : const [],
-      // Deleted reports are deliberately absent after restore. The visible set
-      // is now the complete valid set, so never preserve a phantom "+N more".
+      // Drop deleted sources.
       sourceTotal: resolved.length > 1 ? resolved.length : 0,
     );
   }
@@ -254,7 +250,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       text.length > 40 ? '${text.substring(0, 40).trim()}…' : text;
 
   Future<void> _send(String raw) async {
-    // A transcription in flight owns the composer; let it finish first.
+    // Let an in-flight transcription finish.
     if (_voiceState == _VoiceState.transcribing) return;
     if (_voiceState == _VoiceState.recording) {
       await _voice.cancelRecording();
@@ -270,21 +266,20 @@ class _AskScreenState extends ConsumerState<AskScreen> {
 
     final repo = ref.read(chatRepositoryProvider);
 
-    // Re-asking an edited question: clear its old turn out of the thread first.
+    // Clear the old turn when re-asking an edited question.
     final editing = _editingIndex;
     if (editing != null && _sessionId != null) {
-      // ponytail: rows align with _messages by ordinal, not id. Counting from
-      // the rows self-corrects if an answer never reached the database.
+      // Rows line up by position, not id.
       final stored = await repo.loadMessages(_sessionId!);
       await repo.deleteTrailingMessages(_sessionId!, stored.length - editing);
-      // The warm cache still holds the turns just removed.
+      // Clear the warm cache too.
       await ref.read(aiServiceProvider).resetConversationCache();
       if (!mounted) return;
       setState(() => _messages.removeRange(editing, _messages.length));
     }
     _editingIndex = null;
 
-    // This answer's claim on the thread; a stop or a new question takes it.
+    // This answer owns the current turn.
     final seq = ++_sendSeq;
 
     setState(() {
@@ -293,16 +288,32 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       _messages.add(ChatMessage(role: ChatRole.user, text: text));
     });
     _input.clear();
-    // A new question re-arms the follow.
+    // Re-arm auto-follow for the new question.
     _following = true;
     _scrollToEnd();
 
     _sessionId ??= (await repo.createSession(_titleFor(text))).id;
+
+    // Record the model before the question.
+    final notice = modelNoticeFor(
+      recorded: _sessionModel,
+      current: (await ref.read(activeEngineProvider.future)).label,
+    );
+    if (notice != null) {
+      await repo.addMessage(_sessionId!, ChatRole.notice, notice);
+      _sessionModel = notice;
+      if (!mounted || seq != _sendSeq) return;
+      setState(() {
+        _messages.insert(
+          _messages.length - 1,
+          ChatMessage(role: ChatRole.notice, text: notice),
+        );
+      });
+    }
+
     await repo.addMessage(_sessionId!, ChatRole.user, text);
 
-    // Make sure an engine is available before we try to answer — but skip the
-    // check when the question can be answered locally (no model needed). Cloud
-    // counts as ready, so this only blocks when nothing is set up at all.
+    // Check that an engine is ready.
     final docs = ref.read(documentsProvider).value ?? const [];
     final needsModel = routeQuestion(text, docs) == null;
     if (needsModel && docs.isNotEmpty && !await _aiReady()) {
@@ -320,12 +331,10 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       return;
     }
 
-    // Capture the session id up front so a mid-answer "new chat" can't null it.
+    // Capture the session id early.
     final sid = _sessionId!;
 
-    // Stream the answer. A verified local-router rewrite arrives as one buffered
-    // done chunk; an ordinary model answer streams and is revealed with the smooth
-    // typewriter so bursty word-at-a-time tokens read as continuous typing.
+    // Stream the answer.
     _streamTarget = '';
     _revealed = 0;
     _streamDone = false;
@@ -336,7 +345,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _thinkingActive = false;
     _thinkingStart = null;
     _thinkingSeconds = null;
-    // Pace the reveal for whichever engine is answering (cloud lands all at once).
+    // Pace the reveal by engine.
     _streamRemote = ref.read(activeEngineProvider).value?.isRemote ?? false;
     int? idx;
     var finalText = '';
@@ -344,30 +353,24 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     var sources = const <CuraDocument>[];
     var sourceTotal = 0;
     var first = true;
-    // Session memory: the prior turns (everything before the user message we just
-    // added), text-only, so the model can follow up and summarize the session.
-    // The service bounds history aggressively so local rewrite prefill stays tiny.
+    // Use the prior turns as history.
     final history = [
       for (final m in _messages.sublist(0, _messages.length - 1))
-        if (m.text.trim().isNotEmpty)
+        if (m.role != ChatRole.notice && m.text.trim().isNotEmpty)
           (role: m.role == ChatRole.user ? 'user' : 'assistant', text: m.text),
     ];
-    // Documents already cited in this chat, so "the other ultrasound" resolves to
-    // the one not yet shown.
+    // Use already-shown sources as context.
     final shownSourceIds = {
       for (final m in _messages)
         if (m.role == ChatRole.assistant && m.source != null) m.source!.id,
     };
-    // The reports the conversation is about: titles from the preceding answer in
-    // displayed order, so "the first one" means the item the user just saw.
-    // Falls back to the most recent source card.
+    // Use the current focus documents.
     var orderedFocusDocIds = const <String>[];
     String? lastSourceId;
     for (var i = _messages.length - 1; i >= 0; i--) {
       final m = _messages[i];
       if (m.role == ChatRole.assistant) {
-        // The reports shown as cards are the focus set, in display order, so
-        // "the second one" means the second card the user just saw.
+        // Use surfaced cards as the focus set.
         if (m.sources.length > 1) {
           orderedFocusDocIds = [for (final d in m.sources) d.id];
           break;
@@ -403,7 +406,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
               orderedFocusDocIds: orderedFocusDocIds,
               cancellation: cancel,
             )) {
-      // Stopped or overtaken: leaving the loop also unsubscribes.
+      // Stop if the request is stale.
       if (!mounted || seq != _sendSeq) return;
       finalText = chunk.text;
       source = chunk.source;
@@ -411,7 +414,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       sourceTotal = chunk.sourceTotal;
       final thinkingText = chunk.thinking;
       if (first && chunk.done) {
-        // Instant answer — no typewriter, just show it.
+        // Show a complete answer immediately.
         setState(
           () => _messages.add(
             ChatMessage(
@@ -433,8 +436,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       _streamSourceTotal = sourceTotal;
       if (chunk.done) _streamDone = true;
 
-      // Track the reasoning phase: it's active while reasoning is streaming but
-      // the answer hasn't started. Time it so we can show "Thought for Xs".
+      // Track reasoning while the answer is still pending.
       if (thinkingText.isNotEmpty && _thinkingStart == null) {
         _thinkingStart = DateTime.now();
       }
@@ -446,8 +448,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       _streamThinking = thinkingText;
       _thinkingActive = reasoningNow;
 
-      // Show the bubble once we have anything — reasoning OR answer. Until then
-      // (model still loading/prefill) keep the "Cura is thinking…" bubble.
+      // Show the bubble once there is content.
       if (idx == null &&
           thinkingText.isEmpty &&
           finalText.isEmpty &&
@@ -460,7 +461,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
           idx = _messages.length - 1;
         });
       }
-      // Reasoning is shown raw (not typewritten); push it to the message now.
+      // Show reasoning as-is.
       setState(
         () => _messages[idx!] = _messages[idx!].copyWith(
           thinking: _streamThinking,
@@ -468,7 +469,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
           thinkingSeconds: _thinkingSeconds,
         ),
       );
-      // The answer streams through the typewriter (only once it has content).
+      // Reveal the answer as it streams.
       if (finalText.isNotEmpty) _ensureTyper(idx!);
       _scrollToEndGentle();
     }
@@ -491,16 +492,14 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     );
     if (!mounted || seq != _sendSeq) return;
     setState(() => _busy = false);
-    // The model is free again, so a summary rewrite this answer preempted can
-    // pick up where it left off instead of waiting for the next launch.
+    // Let the summary rewrite continue.
     unawaited(ref.read(summaryRewriterProvider).sweep());
   }
 
-  /// Stops the model, freezes the reveal, saves the partial and restores the
-  /// send button. Never waits on the stream: a stopped backend may not end it.
+  /// Stops the model and saves any partial reply.
   Future<void> _stopAnswer() async {
     if (!_busy) return;
-    // Takes the thread from the running answer.
+    // Take over from the running answer.
     _sendSeq++;
     _cancel?.cancel();
     _cancel = null;
@@ -509,7 +508,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     final target = _streamTarget;
     _revealed = target.length;
     final idx = _messages.length - 1;
-    // Stopped before the first token: nothing shown, so nothing saved.
+    // Nothing to save if the answer never started.
     final hasAnswer =
         target.isNotEmpty &&
         idx >= 0 &&
@@ -547,6 +546,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _cancelTyper();
     setState(() {
       _sessionId = null;
+      _sessionModel = null;
       _messages.clear();
       _showSuggestions = true;
       _editingIndex = null;
@@ -563,6 +563,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     if (!mounted) return;
     setState(() {
       _sessionId = session.id;
+      _sessionModel = lastRecordedModel(stored);
       _messages
         ..clear()
         ..addAll(stored.map((s) => _restoreMessage(s, docs)));
@@ -573,7 +574,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _scrollToEnd();
   }
 
-  /// Loads the last question back into the composer. Backing out costs nothing.
+  /// Load the last question back into the composer.
   void _editLastQuestion(int index) {
     setState(() => _editingIndex = index);
     _input.text = _messages[index].text;
@@ -586,7 +587,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _input.clear();
   }
 
-  /// The last question, the only editable one. Null while an answer streams.
+  /// The last question, if it can be edited.
   int? get _editableIndex {
     if (_busy) return null;
     for (var i = _messages.length - 1; i >= 0; i--) {
@@ -616,9 +617,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     );
   }
 
-  // Opens the model switcher so the user can change the active model without
-  // leaving the chat. The switcher invalidates aiModelStateProvider on any
-  // change, so the header (which watches it) refreshes on its own.
+  // Open the model switcher.
   Future<void> _openModelSwitcher() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -630,8 +629,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     );
   }
 
-  /// Flips the "Think harder" preference from the composer toggle. The service
-  /// reads the pref per question, so there's nothing to reload.
+  /// Flip the think-harder preference.
   Future<void> _setThinkHarder(bool value) async {
     await ref.read(aiModelManagerProvider).setThinkHarder(value);
     ref.invalidate(thinkHarderProvider);
@@ -649,11 +647,10 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     });
   }
 
-  // Slack for counting a released gesture as still at the bottom.
+  // Small margin for a released gesture.
   static const _kFollowSlack = 40.0;
 
-  /// Dragging back stops the follow; only a gesture ending at the bottom
-  /// restarts it. Re-arming mid-drag fights the finger.
+  /// Dragging back stops auto-follow.
   bool _onScrollNotification(ScrollNotification n) {
     if (n is UserScrollNotification) {
       if (n.direction == ScrollDirection.forward) _following = false;
@@ -664,8 +661,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     return false;
   }
 
-  // Pins to the bottom without an animation, so rapid typewriter ticks don't
-  // stack up competing 300ms scrolls. Skipped while the reader has taken over.
+  // Keep the view pinned without animation.
   void _scrollToEndGentle() {
     if (!_following || _touching) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -675,8 +671,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     });
   }
 
-  /// Starts the character-by-character reveal for the streaming assistant message
-  /// at [idx]. Idempotent — the loop feeds [_streamTarget]; this drains it.
+  /// Start the reveal for the streamed answer at [idx].
   void _ensureTyper(int idx) {
     if (_typer != null) return;
     _typerDone = Completer<void>();
@@ -687,9 +682,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       }
       final target = _streamTarget;
       if (_revealed >= target.length) {
-        // Caught up. If the stream is finished, attach the source card and stop;
-        // otherwise idle until more text arrives. copyWith preserves the thinking
-        // panel fields the stream loop set on this message.
+        // Caught up; stop if the stream is done.
         if (_streamDone) {
           setState(
             () => _messages[idx] = _messages[idx].copyWith(
@@ -704,8 +697,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
         }
         return;
       }
-      // Ease toward the target: faster when far behind, ~1 char/tick once caught
-      // up. A cloud answer is fully buffered, so its step is capped.
+      // Advance toward the target.
       final catchUp = math.max(1, ((target.length - _revealed) / 8).ceil());
       final step = _streamRemote
           ? math.min(catchUp, _kCloudRevealStep)
@@ -748,8 +740,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       );
   }
 
-  // Starts voice input: mic permission → one-time model download → record.
-  // The composer morphs into the "Listening…" waveform bar once recording runs.
+  // Start voice input.
   Future<void> _startVoice() async {
     if (_voiceState != _VoiceState.idle) return;
     if (!await _voice.hasMicPermission()) {
@@ -776,8 +767,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     }
   }
 
-  // The ✓ control: stop recording and transcribe on-device, dropping the text
-  // into the composer for the user to review. Never auto-sends.
+  // Stop recording and transcribe.
   Future<void> _stopVoice() async {
     if (_voiceState != _VoiceState.recording) return;
     setState(() => _voiceState = _VoiceState.transcribing);
@@ -805,7 +795,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     }
   }
 
-  // The ✕ control: discard the in-progress recording, back to the composer.
+  // Cancel the recording.
   Future<void> _cancelVoice() async {
     if (_voiceState != _VoiceState.recording) return;
     await _voice.cancelRecording();
@@ -820,15 +810,12 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    // Active model comes from the shared reactive provider, so switching it here
-    // or in Settings keeps this header label in sync.
+    // Use the shared model state.
     final activeModel = ref.watch(aiModelStateProvider).value?.active;
-    // Which engine is actually answering (on-device or the opt-in cloud model) —
-    // the header label reflects this so the user always knows what they're using.
+    // Show which engine is active.
     final engine = ref.watch(activeEngineProvider).value;
     final onRemote = engine?.isRemote ?? false;
-    // Think-harder pref drives the reasoning toggle in the composer, shown only
-    // for reasoning-capable on-device models (e.g. Qwen3); never for cloud.
+    // Show the think-harder toggle only when supported.
     final thinking = ref.watch(thinkHarderProvider).value ?? false;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -914,14 +901,21 @@ class _AskScreenState extends ConsumerState<AskScreen> {
                             onViewSource: widget.onOpenDocument,
                           ),
                         for (var i = 0; i < _messages.length; i++)
-                          _MessageBubble(
-                            message: _messages[i],
-                            onViewSource: widget.onOpenDocument,
-                            // Only the last question offers Edit.
-                            onEdit: i == _editableIndex && _editingIndex == null
-                                ? () => _editLastQuestion(i)
-                                : null,
-                          ),
+                          if (_messages[i].role == ChatRole.notice)
+                            _ModelNotice(
+                              label: _messages[i].text,
+                              first: i == 0,
+                            )
+                          else
+                            _MessageBubble(
+                              message: _messages[i],
+                              onViewSource: widget.onOpenDocument,
+                              // Only the last question offers Edit.
+                              onEdit:
+                                  i == _editableIndex && _editingIndex == null
+                                  ? () => _editLastQuestion(i)
+                                  : null,
+                            ),
                         // Only while waiting for the first token; once the
                         // assistant bubble exists it grows in place instead.
                         if (_busy &&
@@ -989,7 +983,7 @@ class _MessageBubble extends StatelessWidget {
     final isUser = message.role == ChatRole.user;
     final child = isUser ? _userBubble(context) : _assistant(context);
     return GestureDetector(
-          // The press position anchors the menu beside its message.
+          // Anchor the menu to the press position.
           onLongPressStart: (details) =>
               _openMenu(context, details.globalPosition),
           child: Padding(
@@ -1105,8 +1099,7 @@ class _MessageBubble extends StatelessWidget {
     final width = MediaQuery.of(context).size.width * 0.86;
     final hasThinking =
         message.thinking != null && message.thinking!.isNotEmpty;
-    // Hide the answer card only while reasoning is still streaming (no answer
-    // yet); otherwise always show it so a normal reply never flickers.
+    // Keep the answer card visible once a reply exists.
     final showAnswer = message.text.isNotEmpty || !message.thinkingActive;
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: width),
@@ -1180,9 +1173,7 @@ class _MessageBubble extends StatelessWidget {
     );
     final text = message.text;
 
-    // The model writes Markdown: `**bold**` / `__bold__` runs and `### heading`
-    // lines. Render those and drop the markers so raw `**` / `###` never show.
-    // Bullets ("- ") are left as-is; they read fine as plain lines.
+    // Render the model's Markdown.
     if (_hasMarkdown(text)) {
       return Text.rich(
         TextSpan(
@@ -1219,9 +1210,7 @@ class _MessageBubble extends StatelessWidget {
       text.contains('__') ||
       RegExp(r'(^|\n)\s*#{1,6}\s').hasMatch(text);
 
-  /// Builds spans line-by-line: an ATX `### heading` line becomes a bold heading
-  /// (markers stripped); every other line gets inline `**bold**` handling. Not a
-  /// full Markdown parser — just what the model actually emits.
+  /// Build spans line by line.
   List<InlineSpan> _blockSpans(
     String text,
     TextStyle boldStyle,
@@ -1243,8 +1232,7 @@ class _MessageBubble extends StatelessWidget {
     return spans;
   }
 
-  /// Splits [text] into spans, turning `**bold**` runs into [boldStyle]. One
-  /// tolerant pass, not a Markdown parser; an unmatched marker stays literal.
+  /// Split text into inline spans.
   List<InlineSpan> _inlineSpans(String text, TextStyle boldStyle) {
     final spans = <InlineSpan>[];
     final re = RegExp(r'(\*\*|__)(.+?)\1', dotAll: true);
@@ -1259,9 +1247,7 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-/// Collapsible panel showing a reasoning model's chain-of-thought as it streams.
-/// Expanded while live, then auto-collapses once to "Thought for Xs" unless the
-/// user has toggled it.
+/// Collapsible reasoning panel.
 class _ThinkingPanel extends StatefulWidget {
   const _ThinkingPanel({
     required this.text,
@@ -1285,11 +1271,11 @@ class _ThinkingPanelState extends State<_ThinkingPanel> {
   @override
   void didUpdateWidget(_ThinkingPanel old) {
     super.didUpdateWidget(old);
-    // Auto-collapse once, when reasoning finishes — unless the user chose a state.
+    // Auto-collapse when reasoning finishes.
     if (old.active && !widget.active && !_userToggled) {
       _expanded = false;
     }
-    // Keep the newest reasoning in view while it streams and is open.
+    // Keep the latest reasoning in view.
     if (_expanded && widget.active && widget.text != old.text) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scroll.hasClients) {
@@ -1385,9 +1371,48 @@ class _ThinkingPanelState extends State<_ThinkingPanel> {
   }
 }
 
-/// Neutral loading placeholder shown before the first token arrives (model load
-/// + prefill). Three pulsing dots — no wording — so it doesn't clash with the
-/// live "Thinking…" panel that follows for reasoning models.
+/// Loading placeholder before the first token.
+class _ModelNotice extends StatelessWidget {
+  const _ModelNotice({required this.label, required this.first});
+
+  /// The model label.
+  final String label;
+
+  /// Marks the first notice in the thread.
+  final bool first;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        children: [
+          const Expanded(child: Divider(height: 1, color: AppColors.hairline)),
+          // Keep it on one line when possible.
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.sizeOf(context).width - 140,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Text(
+                first ? 'Using $label' : 'Model changed - $label',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: AppColors.faint),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          const Expanded(child: Divider(height: 1, color: AppColors.hairline)),
+        ],
+      ),
+    );
+  }
+}
+
 class _TypingBubble extends StatelessWidget {
   const _TypingBubble();
 
@@ -1433,8 +1458,7 @@ class _TypingBubble extends StatelessWidget {
   }
 }
 
-/// A collection answer cites every validated report: two show initially, and
-/// "+N more" expands the complete source set inline.
+/// A collection answer shows a few sources first.
 class _SourceCardList extends StatefulWidget {
   const _SourceCardList({required this.sources, required this.onView});
 
@@ -1452,8 +1476,7 @@ class _SourceCardListState extends State<_SourceCardList> {
   @override
   Widget build(BuildContext context) {
     final sources = widget.sources;
-    // [sources] is authoritative. Normalize defensive legacy/malformed totals
-    // so the UI never promises cards that it cannot actually display.
+    // Use the source list as-is.
     final total = sources.length;
     final visible = _expanded
         ? sources
@@ -1480,7 +1503,7 @@ class _SourceCardListState extends State<_SourceCardList> {
   }
 }
 
-/// The tappable "+N more" affordance under a stacked source list.
+/// The "+N more" affordance.
 class _MoreReportsRow extends StatelessWidget {
   const _MoreReportsRow({
     required this.label,
@@ -1530,7 +1553,7 @@ class _MoreReportsRow extends StatelessWidget {
   }
 }
 
-/// Compact cited-source card under an answer.
+/// Compact source card.
 class _SourceCard extends StatelessWidget {
   const _SourceCard({required this.document, required this.onView});
 
@@ -1606,7 +1629,7 @@ class _SourceCard extends StatelessWidget {
   }
 }
 
-/// Bottom sheet listing saved conversations to reopen or delete.
+/// Bottom sheet with saved conversations.
 class _HistorySheet extends ConsumerWidget {
   const _HistorySheet({
     required this.currentId,
@@ -1771,32 +1794,32 @@ class _InputBar extends StatelessWidget {
   final FocusNode focusNode;
   final VoidCallback onSend;
 
-  /// While an answer streams the send button becomes a stop button.
+  /// The send button becomes a stop button while busy.
   final bool busy;
   final VoidCallback onStop;
 
-  /// True while the last question is being rewritten; shows the chip.
+  /// True while the last question is being rewritten.
   final bool editing;
   final VoidCallback onCancelEdit;
 
-  /// Voice controls: start (mic), and while recording, stop (✓) / cancel (✕).
+  /// Voice controls.
   final VoidCallback onStartVoice;
   final VoidCallback onStopVoice;
   final VoidCallback onCancelVoice;
 
-  /// Voice-input phase — decides which "face" of the composer is shown.
+  /// Voice input phase.
   final _VoiceState voiceState;
 
-  /// Live mic level (0–1) while recording; null otherwise.
+  /// Mic level while recording.
   final Stream<double>? amplitude;
 
-  /// Whether to show the reasoning toggle (active model supports thinking).
+  /// Show the reasoning toggle when supported.
   final bool showThink;
 
-  /// Current "Think harder" state.
+  /// Think-harder state.
   final bool thinking;
 
-  /// Flips "Think harder". Null (disabled/greyed) while an answer streams.
+  /// Toggle think-harder.
   final VoidCallback? onToggleThink;
 
   // One height for all three faces so swapping doesn't jump the footer.
@@ -1831,7 +1854,7 @@ class _InputBar extends StatelessWidget {
     );
   }
 
-  /// Says why the composer already has text in it.
+  /// Explain why the composer already has text.
   Widget _editingChip(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8, left: 4),
@@ -1924,7 +1947,7 @@ class _InputBar extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        // Circular send button, a stop button while an answer streams.
+        // Send or stop button.
         Semantics(
           button: true,
           label: busy ? 'Stop' : 'Send',
@@ -1955,8 +1978,7 @@ class _InputBar extends StatelessWidget {
   }
 }
 
-/// The "Listening…" face: the composer becomes a single mint pill with a live
-/// waveform on the left, a cancel (✕) and a filled accent stop (✓) on the right.
+/// Listening state for the composer.
 class _ListeningBar extends StatelessWidget {
   const _ListeningBar({
     super.key,
@@ -2038,8 +2060,7 @@ class _ListeningBar extends StatelessWidget {
   }
 }
 
-/// The "Transcribing…" face: a full-width pill with a spinner while Whisper
-/// works on-device.
+/// Transcribing state for the composer.
 class _TranscribingBar extends StatelessWidget {
   const _TranscribingBar({super.key, required this.height});
 
@@ -2086,9 +2107,7 @@ class _TranscribingBar extends StatelessWidget {
   }
 }
 
-/// A continuously animating waveform: mint bars driven by a looping sine, each
-/// with its own phase. The mic level only scales the swing, so the bars still
-/// move when amplitude reporting is flat. Static under "remove animations".
+/// Voice waveform.
 class _VoiceWaveform extends StatefulWidget {
   const _VoiceWaveform({required this.levels});
 
@@ -2106,8 +2125,7 @@ class _VoiceWaveformState extends State<_VoiceWaveform>
   static const double _gap = 3;
 
   late final AnimationController _controller;
-  // Live mic intensity 0–1 (default mid so motion is lively before/without any
-  // amplitude data). Read each tick by the builder; no setState needed.
+  // Mic level, defaulted to keep motion lively.
   double _level = 0.5;
   StreamSubscription<double>? _sub;
 
@@ -2140,7 +2158,7 @@ class _VoiceWaveformState extends State<_VoiceWaveform>
   @override
   Widget build(BuildContext context) {
     if (MediaQuery.of(context).disableAnimations) {
-      // Static but shaped, so it still reads as a waveform.
+      // Static waveform fallback.
       return SizedBox(
         height: _maxHeight,
         child: Row(
@@ -2186,9 +2204,7 @@ class _VoiceWaveformState extends State<_VoiceWaveform>
   );
 }
 
-/// The composer's idle mic — a quiet outline mic that starts voice input. While
-/// recording/transcribing the whole composer is replaced (see _ListeningBar /
-/// _TranscribingBar), so this only ever renders the start affordance.
+/// Idle mic button.
 class _MicButton extends StatelessWidget {
   const _MicButton({required this.onTap});
 
@@ -2212,9 +2228,7 @@ class _MicButton extends StatelessWidget {
   }
 }
 
-/// The "Think harder" toggle in the composer, shown only for reasoning-capable
-/// models. Filled brain when on, outline when off; disabled while an answer
-/// streams.
+/// Think-harder toggle.
 class _ThinkToggleButton extends StatelessWidget {
   const _ThinkToggleButton({required this.on, required this.onTap});
 
@@ -2252,9 +2266,7 @@ class _ThinkToggleButton extends StatelessWidget {
   }
 }
 
-/// The active-model line under the "Ask your records" title: a compact, tappable
-/// label + chevron that opens the model switcher. Greyed out (null [onTap]) while
-/// an answer is streaming.
+/// Active-model label.
 class _ModelSelectorLabel extends StatelessWidget {
   const _ModelSelectorLabel({required this.label, required this.onTap});
 
@@ -2290,9 +2302,7 @@ class _ModelSelectorLabel extends StatelessWidget {
   }
 }
 
-/// Bottom sheet to switch the active on-device model without leaving the chat.
-/// Mirrors the Settings model card: switch between downloaded models, or download
-/// one that isn't installed yet. Loads its own installed/active state.
+/// Bottom sheet to switch the active model.
 class _ModelSwitcherSheet extends ConsumerStatefulWidget {
   const _ModelSwitcherSheet();
 
@@ -2527,9 +2537,7 @@ class _SwitcherRow extends StatelessWidget {
   }
 }
 
-/// The cloud-model row in the switcher sheet. Display-only, since the engine is
-/// enabled from Settings: when cloud is inactive the row is greyed with a
-/// "Turn on in Settings" hint rather than being selectable.
+/// Cloud-model row in the switcher sheet.
 class _CloudSwitcherRow extends StatelessWidget {
   const _CloudSwitcherRow({required this.label, required this.active});
 

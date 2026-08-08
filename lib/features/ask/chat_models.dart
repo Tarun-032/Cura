@@ -1,19 +1,31 @@
 import '../library/document.dart' show CuraDocument;
 
 /// Who sent a chat message.
-enum ChatRole { user, assistant }
+enum ChatRole { user, assistant, notice }
 
-/// Packs a message's cited sources into the single `sourceDocId` column, so no
-/// migration is needed: one source stores its bare id, several store
-/// `id1,id2,...#N` with the validated match count. Null when nothing to cite.
+/// The last model label recorded for the session.
+String? lastRecordedModel(List<StoredMessage> messages) {
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role == ChatRole.notice) return messages[i].text;
+  }
+  return null;
+}
+
+/// The label to record before the next question, if needed.
+String? modelNoticeFor({required String? recorded, required String current}) {
+  final label = current.trim();
+  if (label.isEmpty || label == recorded) return null;
+  return label;
+}
+
+/// Packs cited sources into a single stored value.
 String? encodeSourceRef(List<CuraDocument> sources, int total) {
   if (sources.isEmpty) return null;
   if (sources.length <= 1) return sources.first.id;
   return '${sources.map((d) => d.id).join(',')}#$total';
 }
 
-/// Inverse of [encodeSourceRef]. Legacy rows (a bare id, no separators) decode
-/// to a single id with total 1. Never throws on malformed input.
+/// Inverse of [encodeSourceRef].
 ({List<String> ids, int total}) decodeSourceRef(String raw) {
   final hash = raw.indexOf('#');
   final idPart = hash < 0 ? raw : raw.substring(0, hash);
@@ -22,7 +34,7 @@ String? encodeSourceRef(List<CuraDocument> sources, int total) {
   return (ids: ids, total: total ?? ids.length);
 }
 
-/// A saved Ask conversation (header). Messages are loaded separately.
+/// A saved Ask conversation header.
 class ChatSession {
   const ChatSession({
     required this.id,
@@ -37,8 +49,7 @@ class ChatSession {
   final DateTime updatedAt;
 }
 
-/// A persisted chat message. [sourceDocId] is the cited document's id (resolved
-/// to a CuraDocument at render time), or null.
+/// A persisted chat message.
 class StoredMessage {
   const StoredMessage({
     required this.id,
