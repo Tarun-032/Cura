@@ -1,8 +1,9 @@
-// Which source cards a cloud answer shows.
+// Tests cloud answer card selection.
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:cura/features/ai/ai_service.dart';
+import 'package:cura/features/ai/query_router.dart';
 import 'package:cura/features/ai/remote/cloud_privacy_gate.dart';
 import 'package:cura/features/library/document.dart';
 
@@ -30,7 +31,7 @@ void main() {
 
   group('cloudAnswerCards', () {
     test('an exact route set wins over inference', () {
-      // The route knows the whole set, including what the answer skipped.
+      // Route.
       final picked = AiService.cloudAnswerCards(
         'You have 4 records: **Thyroid Function Panel** — May 18, 2023 …',
         cardSources: docs,
@@ -68,7 +69,7 @@ Both of your recent panels:
     });
 
     test('a shortened title still cards up via its date', () {
-      // Not the stored title, but only one report is filed under Nov 4, 2022.
+      // Match by date.
       final picked = AiService.cloudAnswerCards(
         '**Ferritin Assay** — Nov 4, 2022 — Ferritin 18 ng/mL.',
         candidates: docs,
@@ -79,7 +80,7 @@ Both of your recent panels:
     });
 
     test('falls back to the router pick when nothing is identifiable', () {
-      // No full title and no date, so the route's pick stands in.
+      // Fallback to router.
       final picked = AiService.cloudAnswerCards(
         'Your latest report is the ferritin assay.',
         candidates: docs,
@@ -125,6 +126,70 @@ Both of your recent panels:
 
       expect(picked.cards, isEmpty);
       expect(picked.cited, isNull);
+    });
+  });
+
+  group('collectionPrompt', () {
+    // Keyword scope matches only Xpert.
+    final tb = [
+      _doc('xpert', 'Xpert MTB/RIF', DateTime(2024, 9, 4)),
+      _doc('afb', 'AFB Culture', DateTime(2024, 9, 3)),
+      _doc('histo', 'Histopathology', DateTime(2025, 2, 15)),
+    ];
+
+    test('a type count is proved on the device and sent as verified', () {
+      final route = routeQuestion('how many lab reports do i have', tb)!;
+
+      expect(route.kind, RoutedAnswerKind.count);
+      expect(route.sourcesAreAuthoritative, isTrue);
+      final prompt = AiService.collectionPrompt(route);
+      expect(prompt.verifiedCount, route.text);
+      expect(prompt.listNote, contains('the user asked for a list'));
+      // Proved set: supplies details and cards.
+      expect(prompt.topical, isFalse);
+    });
+
+    test('a topical count claims no number and asks for the judgement', () {
+      final route = routeQuestion('how many TB related reports do i have', tb)!;
+
+      // Keyword scope -> not authoritative.
+      expect(route.kind, RoutedAnswerKind.count);
+      expect(route.sourcesAreAuthoritative, isFalse);
+      expect(route.text, contains('1'));
+
+      final prompt = AiService.collectionPrompt(route);
+      expect(prompt.verifiedCount, isNull);
+      expect(prompt.listNote, contains('relate to a medical topic'));
+      expect(prompt.listNote, contains('one entry at a time'));
+      expect(prompt.listNote, contains('why it relates'));
+      // Keyword pick withheld: no fixed cards.
+      expect(prompt.topical, isTrue);
+    });
+
+    test('a list route never carries a count', () {
+      final route = routeQuestion('list my lab reports', tb)!;
+
+      expect(route.kind, RoutedAnswerKind.list);
+      final prompt = AiService.collectionPrompt(route);
+      expect(prompt.verifiedCount, isNull);
+      expect(prompt.listNote, isNotNull);
+    });
+
+    test('a non-collection route gets neither', () {
+      final route = routeQuestion('what is my latest lab report', tb)!;
+
+      expect(route.kind, isNot(RoutedAnswerKind.count));
+      expect(route.kind, isNot(RoutedAnswerKind.list));
+      final prompt = AiService.collectionPrompt(route);
+      expect(prompt.verifiedCount, isNull);
+      expect(prompt.listNote, isNull);
+    });
+
+    test('an unrouted question gets neither', () {
+      final prompt = AiService.collectionPrompt(null);
+
+      expect(prompt.verifiedCount, isNull);
+      expect(prompt.listNote, isNull);
     });
   });
 }

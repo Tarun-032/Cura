@@ -3,21 +3,10 @@ import 'package:flutter/material.dart';
 import '../../app/theme/app_colors.dart';
 import 'cura_spark.dart';
 
-/// The four primary destinations, in bar order. The center scan FAB sits in the
-/// visual gap between [timeline] and [ask].
+/// Bottom navigation tabs.
 enum CuraTab { home, timeline, ask, settings }
 
-/// Shared app-shell bottom navigation bar.
-///
-/// A host screen wires it up like this:
-/// ```dart
-/// Scaffold(
-///   bottomNavigationBar: CuraBottomNavBar(current: CuraTab.home, onSelect: ...),
-///   floatingActionButton: CuraScanFab(onPressed: ...),
-///   floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-/// )
-/// ```
-/// `centerDocked` lets the FAB sit elevated over the bar without manual stacking.
+/// Bottom navigation bar. Use with a centered FAB (centerDocked).
 class CuraBottomNavBar extends StatelessWidget {
   const CuraBottomNavBar({
     super.key,
@@ -55,7 +44,7 @@ class CuraBottomNavBar extends StatelessWidget {
                 current: current,
                 onSelect: onSelect,
               ),
-              // Gap for the elevated center scan FAB.
+              // Gap for center FAB.
               const SizedBox(width: 72),
               _NavItem(
                 customIcon: const CuraSpark(size: 34),
@@ -130,8 +119,7 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-/// The elevated center add-document action. Use with
-/// [FloatingActionButtonLocation.centerDocked].
+/// Center add-document FAB.
 class CuraAddFab extends StatelessWidget {
   const CuraAddFab({super.key, required this.onPressed});
 

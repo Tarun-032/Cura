@@ -269,6 +269,22 @@ class AiService {
       'describe a record\'s contents or results unless the user asked what they '
       'show.';
 
+  /// Topical list note.
+  static const _topicalListNote =
+      ' Note: the user asked which of their records relate to a medical topic. '
+      'Before answering, go through the Complete record inventory one entry at a '
+      'time, first to last, and decide for each whether a clinician would call it '
+      'related — a test that looks for the condition, a result that shows or rules '
+      'it out, a treatment for it, or a finding that suggests it. Judge each entry '
+      'on its findings hint as much as its title: a record counts even when '
+      'neither its title nor its hint ever uses the topic word, so a biopsy '
+      'reporting granulomatous inflammation is tuberculosis-related and a raised '
+      'creatinine is kidney-related. Do not stop at the entries whose titles '
+      'match. Then answer with one line giving the total, then one bullet per '
+      'related record: its title in bold, then the record type, the date, and a '
+      'few words on why it relates. Do not claim a count you have not listed, and '
+      'if nothing relates, say so plainly.';
+
   /// Collection note.
   static const _collectionNote =
       ' Note: the user requested the reports shown below as a group. Cover EVERY '
@@ -341,6 +357,26 @@ class AiService {
     );
   }
 
+  /// Collection prompt details for cloud model.
+  @visibleForTesting
+  static ({String? verifiedCount, String? listNote, bool topical})
+  collectionPrompt(RoutedAnswer? route) {
+    const none = (verifiedCount: null, listNote: null, topical: false);
+    if (route == null) return none;
+    if (route.kind != RoutedAnswerKind.count &&
+        route.kind != RoutedAnswerKind.list) {
+      return none;
+    }
+    if (!route.sourcesAreAuthoritative) {
+      return (verifiedCount: null, listNote: _topicalListNote, topical: true);
+    }
+    return (
+      verifiedCount: route.kind == RoutedAnswerKind.count ? route.text : null,
+      listNote: _listNote,
+      topical: false,
+    );
+  }
+
   /// Join a list naturally.
   static String _naturalList(List<String> items) {
     if (items.length <= 1) return items.join();
@@ -384,9 +420,8 @@ class AiService {
     // One route per cloud turn: a verified count, the exact card set, and the
     // report to cite.
     final cloudRoute = useRemote ? routeQuestion(q, docs) : null;
-    final verifiedCount = cloudRoute?.kind == RoutedAnswerKind.count
-        ? cloudRoute!.text
-        : null;
+    final collection = collectionPrompt(cloudRoute);
+    final verifiedCount = collection.verifiedCount;
     final isCollectionRoute =
         cloudRoute?.kind == RoutedAnswerKind.count ||
         cloudRoute?.kind == RoutedAnswerKind.list;
@@ -446,7 +481,10 @@ class AiService {
     final cloudIdentityTerms = useRemote
         ? privacyGate.identityTermsForDocuments(docs)
         : const <String>{};
-    final detailedContext = contextDocs.isEmpty
+    // A topical question is judged across the whole inventory, so the keyword
+    // pick must not be shown as "the relevant reports" — that reads as the
+    // answer and stops the model looking any further.
+    final detailedContext = contextDocs.isEmpty || collection.topical
         ? ''
         : (useRemote
               ? privacyGate.buildContext(contextDocs).text
@@ -491,9 +529,9 @@ class AiService {
         ? '$enginePrompt${_otherReportsNote(g.otherReports)}'
         : enginePrompt;
     // Appended, not folded in above, so the local KV cache keys off basePrompt.
-    final systemPrompt = isCollectionRoute
-        ? '$basePrompt$_listNote'
-        : basePrompt;
+    final systemPrompt = collection.listNote == null
+        ? basePrompt
+        : '$basePrompt${collection.listNote}';
     // Add bounded history.
     final wantsRecall = routed == null && _recallRe.hasMatch(q.toLowerCase());
     final priorTurns = _boundedHistory(
@@ -530,10 +568,12 @@ class AiService {
       // Collection routes carry their local set.
       final routeCardsAreAuthoritative =
           isCollectionRoute && cloudRoute!.sourcesAreAuthoritative;
-      // Attach every matching source.
+      // Attach every matching source, unless the keyword pick is only a guess at
+      // a topic — then the cards follow whatever the answer names.
       final groundedCollectionSources =
-          g.kind == GroundingKind.collection ||
-              (g.kind == GroundingKind.grounded && contextDocs.length > 1)
+          !collection.topical &&
+              (g.kind == GroundingKind.collection ||
+                  (g.kind == GroundingKind.grounded && contextDocs.length > 1))
           ? contextDocs
           : const <CuraDocument>[];
       final cardSources = routeCardsAreAuthoritative
@@ -591,14 +631,8 @@ class AiService {
         return;
       }
 
-      // ---- ChatML fast path: reuse the warm KV cache when it is safe to. ----
-      // Three shapes, cheapest first:
-      //  * follow-up — this same chat's turns are already cached; append only the
-      //                new user turn onto the open answer.
-      //  * warm base — only the (matching) system prompt is cached (pre-warm, or a
-      //                just-finished rebuild); append history + the new user turn.
-      //  * rebuild   — anything else: clear, then prefill system + history + user.
-      // Any doubt → rebuild. See chat_format.dart + its tests.
+      // ChatML fast path: attempt KV reuse, else rebuild.
+      // Reuse shapes: follow-up, warm base, rebuild.
       final user = (role: 'user', text: userContent);
       final sameSystem = _kvSystem == systemContent;
       String? feed;
@@ -635,8 +669,7 @@ class AiService {
         _kvConvId = conversationId;
       }
 
-      // Seed a closed reasoning block so the model continues after it and cannot
-      // reason. The tags live in the prompt, not the output.
+      // Insert closed think block to prevent model reasoning.
       if (noThink) feed = '$feed$_kNoThinkPrefill';
 
       // Budget against the *total* cache after this turn, so prompt + answer never
@@ -676,9 +709,7 @@ class AiService {
         cancellation?.detach();
       }
 
-      // The answer sits open in the cache (no trailing <|im_end|>), so record it
-      // for the next turn to stitch onto and grow the token estimate. A stop
-      // cuts it where the estimate cannot see, so that cache goes.
+      // Record open answer in KV cache for reuse; clear if stopped.
       if (cancellation?.cancelled ?? false) {
         await _clearKv();
       } else {
@@ -722,8 +753,7 @@ class AiService {
         }
         return;
       }
-      // Salvage a blank answer: surface the <think> content so the bubble is
-      // never empty. Only ever rescues a malformed reply.
+      // If answer empty, show thinking text instead.
       yield _finalLocalChunk(parsed, source, candidates: resolveCandidates);
     } catch (_) {
       // Cache state is now uncertain — invalidate so the next question rebuilds.
@@ -1057,8 +1087,7 @@ class AiService {
         ScanExtractionMode.labRows => _labRowsExtractionPrompt,
       };
 
-  // The one place the model writes prose about a document. It condenses and
-  // joins; it may not add or reinterpret. Only boilerplate may be dropped.
+  // Document summary rewrite prompt.
   static const _summaryRewritePrompt =
       'Summarize the clinical report below as clear, plain English for the '
       'person it belongs to. Keep every finding, measurement, value, date, and '
@@ -1174,8 +1203,7 @@ class AiService {
     required String? title,
     required GenerationCancellation cancellation,
   }) async {
-    // Same minimization the cloud scan refinement uses. An empty result means
-    // the allowlist kept nothing, which fails closed rather than sending more.
+    // Apply cloud minimization; fail closed if empty.
     final safe = const CloudPrivacyGate()
         .scanText(source, title: title, type: type)
         .text;
@@ -1308,9 +1336,7 @@ class AiService {
     if (cancellation.cancelled) return null;
     try {
       final sw = Stopwatch()..start();
-      // Raw JSON from whichever engine is active; validation is identical after.
-      // Cloud sees only the allowlisted medical lines, while parseScanExtraction
-      // validates against the full unredacted [text].
+      // Extract JSON from engine; validate against full OCR.
       final wantsRepair =
           useRemote &&
           fields.contains(ScanRefinementField.results) &&
@@ -1589,7 +1615,7 @@ class AiService {
     _spec = spec;
     final path = await _manager.modelPath(spec);
 
-    // Use Vulkan offload only when recommended; otherwise fall back to CPU.
+    // Prefer Vulkan GPU layers when recommended.
     var layers = 0;
     final probe = LlamaController();
     try {
@@ -1606,8 +1632,7 @@ class AiService {
       debugPrint('[Cura.ai] gpu detect failed: $e');
     }
 
-    // 6 threads: prefill is the bottleneck, so use the big cores plus a couple
-    // more without over-subscribing the little ones.
+    // Use 6 threads for loading.
     try {
       await probe.loadModel(
         modelPath: path,
@@ -1632,11 +1657,9 @@ class AiService {
     }
     _layers = layers;
 
-    // Pre-warm the cache with the common-case system prompt so the first question
-    // doesn't pay to prefill it. maxTokens:0 prefills without generating.
+    // Pre-warm KV with system prompt.
     if (spec.template == 'chatml') {
-      // The system prompt is stable across think on/off (the /no_think switch
-      // lives on the user turn), so the plain prompt pre-warms every model.
+      // Pre-warm using stable system prompt.
       final warmSys = _systemPrompt;
       final block = chatmlSystemBlock(warmSys);
       try {

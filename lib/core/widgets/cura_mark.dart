@@ -2,10 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme/app_colors.dart';
 
-/// The Cura brand mark: a ring with an offset main dot and a small mint accent
-/// dot. Drawn in code so it stays crisp at any size and re-colours for
-/// light/dark. Geometry in a 100×100 space: ring r34 at (50,50), main dot r16 at
-/// (44,46), accent dot r5 at (61,63).
+/// Cura brand mark.
 class CuraMark extends StatelessWidget {
   const CuraMark({
     super.key,
@@ -17,13 +14,13 @@ class CuraMark extends StatelessWidget {
 
   final double size;
 
-  /// Boundary ring stroke colour.
+  /// Ring stroke color.
   final Color ringColor;
 
-  /// Main (large) dot fill.
+  /// Main dot color.
   final Color dotColor;
 
-  /// Small lower-right accent dot fill.
+  /// Accent dot color.
   final Color accentColor;
 
   @override
@@ -83,8 +80,7 @@ class _CuraMarkPainter extends CustomPainter {
       old.accentColor != accentColor;
 }
 
-/// The onboarding brand lockup: the [CuraMark] on a floating white circle wrapped
-/// in a soft mint halo (glow). [size] is the halo's overall diameter.
+/// Brand logo halo.
 class CuraLogoHalo extends StatelessWidget {
   const CuraLogoHalo({super.key, this.size = 208});
 
@@ -97,8 +93,7 @@ class CuraLogoHalo extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        // Soft mint glow: full at the core, fading to nothing at the rim so the
-        // halo feathers out rather than ending on a hard circle edge.
+        // Soft mint glow.
         gradient: RadialGradient(
           colors: [
             AppColors.softTint,
@@ -115,7 +110,7 @@ class CuraLogoHalo extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: AppColors.surface,
-          // Gentle emerald-tinted shadow so the white disc reads as floating.
+          // Gentle shadow for floating effect.
           boxShadow: [
             BoxShadow(
               color: AppColors.ink.withValues(alpha: 0.10),

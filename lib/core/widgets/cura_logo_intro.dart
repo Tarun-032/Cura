@@ -24,8 +24,7 @@ class _CuraLogoIntroState extends State<CuraLogoIntro> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Respect the system "remove animations" setting: never touch the decoder,
-    // just show the static lockup.
+    // Honor system "remove animations" setting.
     if (MediaQuery.of(context).disableAnimations) {
       _settled = true;
     } else if (_controller == null && !_settled) {
@@ -36,8 +35,7 @@ class _CuraLogoIntroState extends State<CuraLogoIntro> {
   Future<void> _start() async {
     final controller = VideoPlayerController.asset(
       'assets/video/Cura_intro_1.mp4',
-      // The clip still carries a silent audio track. Mixing keeps Android from
-      // taking audio focus and ducking whatever the user is already playing.
+      // Mix audio to avoid taking Android audio focus.
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
     );
     _controller = controller;
@@ -105,10 +103,10 @@ class _CuraLogoIntroState extends State<CuraLogoIntro> {
           fit: StackFit.expand,
           children: [
             VideoPlayer(controller),
-            // Paint a radial fade over the video to feather its edges, match the halo, and avoid ShaderMask/saveLayer issues on Android.
+            // Radial fade over the video.
             DecoratedBox(
               decoration: BoxDecoration(
-                // Short fade to match the halo.
+                // Short fade to match halo.
                 gradient: RadialGradient(
                   radius: 0.5,
                   colors: [
