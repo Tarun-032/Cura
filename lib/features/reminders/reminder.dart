@@ -1,4 +1,4 @@
-/// One dose; UI model (no Drift).
+/// One dose (UI model).
 class MedicineReminder {
   const MedicineReminder({
     required this.id,
@@ -11,26 +11,17 @@ class MedicineReminder {
     this.lastTakenDay,
   });
 
-  /// Row / notification id.
   final int id;
   final String documentId;
   final String medicineLabel;
-
-  /// Minutes since midnight.
   final int minuteOfDay;
   final DateTime startDate;
-
-  /// Last day, or null if open-ended.
   final DateTime? endDate;
   final bool enabled;
-
-  /// Last taken day (display only).
   final DateTime? lastTakenDay;
 
-  /// e.g. "8:00 AM".
   String get timeLabel => clockLabel(minuteOfDay);
 
-  /// Active on [day] (ignores enabled).
   bool coversDay(DateTime day) {
     final at = _dayOnly(day);
     if (at.isBefore(_dayOnly(startDate))) return false;
@@ -38,7 +29,6 @@ class MedicineReminder {
     return end == null || !at.isAfter(_dayOnly(end));
   }
 
-  /// Taken on [day]?
   bool takenOn(DateTime day) {
     final taken = lastTakenDay;
     return taken != null && _dayOnly(taken) == _dayOnly(day);
@@ -63,7 +53,14 @@ class MedicineReminder {
 
 DateTime _dayOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-/// Format minute-of-day as clock time.
+/// Calendar-day add (DST-safe).
+DateTime addDays(DateTime from, int days) =>
+    DateTime(from.year, from.month, from.day + days);
+
+/// Whole days between dates (DST-safe).
+int daysBetween(DateTime from, DateTime to) =>
+    (_dayOnly(to).difference(_dayOnly(from)).inHours / 24).round();
+
 String clockLabel(int minuteOfDay) {
   final hour = minuteOfDay ~/ 60;
   final display = hour % 12 == 0 ? 12 : hour % 12;
@@ -71,7 +68,6 @@ String clockLabel(int minuteOfDay) {
   return '$display:$minute ${hour < 12 ? 'AM' : 'PM'}';
 }
 
-/// Enabled doses covering [day], earliest first.
 List<MedicineReminder> dosesOn(List<MedicineReminder> all, DateTime day) {
   final due = [
     for (final r in all)
@@ -81,10 +77,40 @@ List<MedicineReminder> dosesOn(List<MedicineReminder> all, DateTime day) {
   return due;
 }
 
-/// Untaken doses today (bell badge).
 int dosesLeftToday(List<MedicineReminder> all, DateTime now) =>
     dosesOn(all, now).where((r) => !r.takenOn(now)).length;
 
-/// Course end from [start] + [days]; null if open-ended.
 DateTime? courseEnd(DateTime start, int? days) =>
-    days == null ? null : _dayOnly(start).add(Duration(days: days - 1));
+    days == null ? null : addDays(start, days - 1);
+
+/// Null days = ongoing.
+const kCourseOptions = <({String label, int? days})>[
+  (label: '1 week', days: 7),
+  (label: '2 weeks', days: 14),
+  (label: '1 month', days: 30),
+  (label: '3 months', days: 90),
+  (label: '6 months', days: 180),
+  (label: 'Ongoing', days: null),
+];
+
+String courseLabel(int? days) {
+  if (days == null) return 'Ongoing';
+  for (final option in kCourseOptions) {
+    if (option.days == days) return option.label;
+  }
+  return '$days days';
+}
+
+String? courseProgress(List<MedicineReminder> doses, DateTime day) {
+  if (doses.isEmpty) return null;
+  final end = doses.first.endDate;
+  if (end == null) return null;
+  final start = _dayOnly(doses.first.startDate);
+  for (final dose in doses) {
+    if (dose.endDate != end || _dayOnly(dose.startDate) != start) return null;
+  }
+  final total = daysBetween(start, end) + 1;
+  final current = daysBetween(start, day) + 1;
+  if (current < 1 || current > total) return null;
+  return 'Day $current of $total';
+}

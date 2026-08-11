@@ -6,8 +6,8 @@ import '../../core/data/providers.dart';
 import '../library/document.dart';
 import 'reminder.dart';
 import 'reminder_service.dart';
+import 'widgets/duration_sheet.dart';
 
-/// Reminder list by prescription.
 class ReminderScreen extends ConsumerWidget {
   const ReminderScreen({super.key});
 
@@ -47,7 +47,6 @@ class ReminderScreen extends ConsumerWidget {
   }
 }
 
-/// Doc for a reminder, or null if deleted.
 CuraDocument? findDocumentById(List<CuraDocument> docs, String id) {
   for (final d in docs) {
     if (d.id == id) return d;
@@ -87,7 +86,6 @@ class _Empty extends StatelessWidget {
   }
 }
 
-/// One prescription summary row.
 class _PrescriptionRow extends StatelessWidget {
   const _PrescriptionRow({required this.document, required this.doses});
 
@@ -154,7 +152,6 @@ class _PrescriptionRow extends StatelessWidget {
   }
 }
 
-/// Doses for one prescription.
 class PrescriptionRemindersScreen extends ConsumerWidget {
   const PrescriptionRemindersScreen({
     super.key,
@@ -182,7 +179,6 @@ class PrescriptionRemindersScreen extends ConsumerWidget {
       appBar: AppBar(
         backgroundColor: AppColors.canvas,
         surfaceTintColor: Colors.transparent,
-        // Fit long record titles.
         titleTextStyle: textTheme.titleMedium,
         title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
@@ -217,7 +213,6 @@ class PrescriptionRemindersScreen extends ConsumerWidget {
     );
   }
 
-  /// Delete all doses for this prescription.
   Future<void> _deleteAll(BuildContext context, WidgetRef ref, int n) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -280,12 +275,22 @@ class _MedicineCard extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(label, style: textTheme.bodyMedium),
-                    const SizedBox(height: 2),
-                    Text(
-                      end == null ? 'Every day' : 'Until ${_dayLabel(end)}',
-                      style: textTheme.bodySmall?.copyWith(
-                        color: AppColors.faint,
-                      ),
+                    Row(
+                      children: [
+                        CourseButton(
+                          days: end == null
+                              ? null
+                              : daysBetween(ordered.first.startDate, end) + 1,
+                          onChanged: (days) => _setCourse(ref, days),
+                        ),
+                        if (end != null)
+                          Text(
+                            '· until ${_dayLabel(end)}',
+                            style: textTheme.bodySmall?.copyWith(
+                              color: AppColors.faint,
+                            ),
+                          ),
+                      ],
                     ),
                   ],
                 ),
@@ -311,6 +316,15 @@ class _MedicineCard extends ConsumerWidget {
   Future<void> _remove(WidgetRef ref) async {
     final repository = ref.read(reminderRepositoryProvider);
     await repository.deleteMedicine(doses.first.documentId, label);
+    await ref.read(reminderServiceProvider).sync(await repository.all());
+  }
+
+  Future<void> _setCourse(WidgetRef ref, int? days) async {
+    final repository = ref.read(reminderRepositoryProvider);
+    await repository.setCourse(
+      [for (final d in doses) d.id],
+      courseEnd(doses.first.startDate, days),
+    );
     await ref.read(reminderServiceProvider).sync(await repository.all());
   }
 }

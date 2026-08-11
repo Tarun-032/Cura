@@ -7,8 +7,8 @@ import '../reminder.dart';
 import '../reminder_screen.dart';
 import '../reminder_service.dart';
 import '../schedule_parser.dart';
+import 'duration_sheet.dart';
 
-/// Per-medicine remind chip.
 class SetReminderButton extends ConsumerWidget {
   const SetReminderButton({
     super.key,
@@ -22,7 +22,6 @@ class SetReminderButton extends ConsumerWidget {
   final String documentTitle;
   final String medicineLabel;
 
-  /// Printed directions.
   final String directions;
 
   @override
@@ -57,7 +56,6 @@ class SetReminderButton extends ConsumerWidget {
 
   Future<void> _set(BuildContext context, WidgetRef ref) async {
     final parsed = parseMedicineSchedule(directions);
-    // SOS / empty → manual pickers.
     final schedule = parsed == null
         ? await _pickOwn(context)
         : await showModalBottomSheet<MedicineSchedule>(
@@ -68,6 +66,15 @@ class SetReminderButton extends ConsumerWidget {
                 _ChoiceSheet(medicineLabel: medicineLabel, parsed: parsed),
           );
     if (schedule == null || !context.mounted) return;
+
+    var days = schedule.days;
+    if (days == null && parsed != null) {
+      final chosen = await showDurationSheet(context, [
+        (label: medicineLabel, printedDays: null),
+      ]);
+      if (chosen == null || !context.mounted) return;
+      days = chosen[medicineLabel];
+    }
 
     final service = ref.read(reminderServiceProvider);
     if (!await service.requestPermissions()) {
@@ -84,15 +91,13 @@ class SetReminderButton extends ConsumerWidget {
       medicineLabel: medicineLabel,
       minutes: schedule.times,
       startDate: DateTime(today.year, today.month, today.day),
-      endDate: courseEnd(today, schedule.days),
+      endDate: courseEnd(today, days),
     );
     await service.sync(await repository.all());
 
     if (!context.mounted) return;
     final times = saved.map((r) => r.timeLabel).join(', ');
-    final until = schedule.days == null
-        ? 'every day'
-        : 'for ${schedule.days} days';
+    final until = days == null ? 'every day' : 'for $days days';
     _toast(context, 'Reminder set for $times, $until.');
     if (!await service.canScheduleExactly() && context.mounted) {
       _toast(
@@ -105,7 +110,6 @@ class SetReminderButton extends ConsumerWidget {
 
 }
 
-/// Remind all parseable medicines.
 class RemindAllButton extends ConsumerWidget {
   const RemindAllButton({
     super.key,
@@ -117,7 +121,6 @@ class RemindAllButton extends ConsumerWidget {
   final String documentId;
   final String documentTitle;
 
-  /// Medicines in card order.
   final List<({String label, String directions})> medicines;
 
   @override
@@ -160,6 +163,18 @@ class RemindAllButton extends ConsumerWidget {
       return;
     }
 
+    var days = {
+      for (final entry in schedules.entries) entry.key: entry.value.days,
+    };
+    if (days.values.any((d) => d == null)) {
+      final chosen = await showDurationSheet(context, [
+        for (final entry in schedules.entries)
+          (label: entry.key, printedDays: entry.value.days),
+      ]);
+      if (chosen == null || !context.mounted) return;
+      days = chosen;
+    }
+
     final service = ref.read(reminderServiceProvider);
     if (!await service.requestPermissions()) {
       if (context.mounted) {
@@ -176,7 +191,7 @@ class RemindAllButton extends ConsumerWidget {
         medicineLabel: entry.key,
         minutes: entry.value.times,
         startDate: DateTime(today.year, today.month, today.day),
-        endDate: courseEnd(today, entry.value.days),
+        endDate: courseEnd(today, days[entry.key]),
       );
     }
     await service.sync(await repository.all());
@@ -199,7 +214,6 @@ void _toast(BuildContext context, String message) {
     );
 }
 
-/// Printed vs custom time.
 class _ChoiceSheet extends StatelessWidget {
   const _ChoiceSheet({required this.medicineLabel, required this.parsed});
 
@@ -250,7 +264,6 @@ class _ChoiceSheet extends StatelessWidget {
   }
 }
 
-/// Time picker, then optional end date.
 Future<MedicineSchedule?> _pickOwn(BuildContext context) async {
   final time = await showTimePicker(
     context: context,
@@ -271,7 +284,7 @@ Future<MedicineSchedule?> _pickOwn(BuildContext context) async {
   );
   return MedicineSchedule(
     [time.hour * 60 + time.minute],
-    days: last == null ? null : last.difference(start).inDays + 1,
+    days: last == null ? null : daysBetween(start, last) + 1,
   );
 }
 

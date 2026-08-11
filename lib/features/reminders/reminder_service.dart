@@ -9,7 +9,6 @@ import 'reminder.dart';
 import 'reminder_action_handler.dart';
 import 'reminder_plan.dart';
 
-/// Local reminder scheduler.
 class ReminderService {
   ReminderService([FlutterLocalNotificationsPlugin? plugin])
     : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
@@ -29,14 +28,12 @@ class ReminderService {
         AndroidFlutterLocalNotificationsPlugin
       >();
 
-  /// Init timezone + channel (idempotent).
   Future<void> init() async {
     if (_ready) return;
     tzdata.initializeTimeZones();
     try {
       tz.setLocalLocation(tz.getLocation(await FlutterTimezone.getLocalTimezone()));
     } catch (error) {
-      // Fall through; alarms would be UTC.
       debugPrint('[Cura.reminders] local timezone unavailable: $error');
     }
     await _plugin.initialize(
@@ -50,7 +47,6 @@ class ReminderService {
     _ready = true;
   }
 
-  /// Ask notification (+ exact alarm) permission.
   Future<bool> requestPermissions() async {
     await init();
     final allowed = await _android?.requestNotificationsPermission() ?? true;
@@ -58,11 +54,9 @@ class ReminderService {
     return allowed;
   }
 
-  /// Exact-alarm permission granted?
   Future<bool> canScheduleExactly() async =>
       await _android?.canScheduleExactNotifications() ?? false;
 
-  /// Clear and rebook all alarms.
   Future<void> sync(List<MedicineReminder> reminders) async {
     await init();
     await _clear();
@@ -79,7 +73,6 @@ class ReminderService {
     );
   }
 
-  /// Cancel all pending (reminders only use this plugin).
   Future<void> _clear() async {
     for (final pending in await _plugin.pendingNotificationRequests()) {
       await _plugin.cancel(id: pending.id);
@@ -102,19 +95,20 @@ class ReminderService {
           priority: Priority.high,
           category: AndroidNotificationCategory.reminder,
           groupKey: _channel.id,
-          // Expand body when opened.
           styleInformation: BigTextStyleInformation(
             n.body,
             contentTitle: n.title,
           ),
-          actions: const [
-            AndroidNotificationAction(kTakenAction, 'Taken'),
-            AndroidNotificationAction(
-              kSnoozeAction,
-              'Snooze 15m',
-              cancelNotification: false,
-            ),
-          ],
+          actions: n.courseEnd
+              ? const []
+              : const [
+                  AndroidNotificationAction(kTakenAction, 'Taken'),
+                  AndroidNotificationAction(
+                    kSnoozeAction,
+                    'Snooze 15m',
+                    cancelNotification: false,
+                  ),
+                ],
         ),
       ),
       androidScheduleMode: mode,
@@ -123,7 +117,6 @@ class ReminderService {
   }
 }
 
-/// ReminderService provider.
 final reminderServiceProvider = Provider<ReminderService>(
   (ref) => ReminderService(),
 );

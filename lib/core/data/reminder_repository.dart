@@ -3,31 +3,26 @@ import 'package:drift/drift.dart';
 import '../../features/reminders/reminder.dart';
 import 'app_database.dart';
 
-/// Drift ↔ [MedicineReminder].
 class ReminderRepository {
   ReminderRepository(this._db);
 
   final AppDatabase _db;
 
-  /// Watch all, earliest first.
   Stream<List<MedicineReminder>> watchAll() {
     final query = _db.select(_db.reminders)
       ..orderBy([(r) => OrderingTerm.asc(r.minuteOfDay)]);
     return query.watch().map((rows) => rows.map(_toModel).toList());
   }
 
-  /// All rows (startup reschedule).
   Future<List<MedicineReminder>> all() async =>
       (await _db.select(_db.reminders).get()).map(_toModel).toList();
 
-  /// Reminders for one document.
   Future<List<MedicineReminder>> forDocument(String documentId) async {
     final query = _db.select(_db.reminders)
       ..where((r) => r.documentId.equals(documentId));
     return (await query.get()).map(_toModel).toList();
   }
 
-  /// Insert one row per time.
   Future<List<MedicineReminder>> addAll({
     required String documentId,
     required String medicineLabel,
@@ -62,13 +57,11 @@ class ReminderRepository {
     return saved;
   }
 
-  /// Enable/disable one dose.
   Future<void> setEnabled(int id, bool enabled) =>
       (_db.update(_db.reminders)..where((r) => r.id.equals(id))).write(
         RemindersCompanion(enabled: Value(enabled)),
       );
 
-  /// Mark taken for [day], or clear with null.
   Future<void> setTaken(List<int> ids, DateTime? day) =>
       (_db.update(_db.reminders)..where((r) => r.id.isIn(ids))).write(
         RemindersCompanion(
@@ -76,13 +69,18 @@ class ReminderRepository {
         ),
       );
 
-  /// Change dose time.
+  Future<void> setCourse(List<int> ids, DateTime? endDate) =>
+      (_db.update(_db.reminders)..where((r) => r.id.isIn(ids))).write(
+        RemindersCompanion(
+          endDate: Value(endDate == null ? null : _dayOnly(endDate)),
+        ),
+      );
+
   Future<void> setTime(int id, int minuteOfDay) =>
       (_db.update(_db.reminders)..where((r) => r.id.equals(id))).write(
         RemindersCompanion(minuteOfDay: Value(minuteOfDay)),
       );
 
-  /// Delete reminders for a document.
   Future<List<int>> deleteForDocument(String documentId) async {
     final doomed = await forDocument(documentId);
     await (_db.delete(
@@ -91,7 +89,6 @@ class ReminderRepository {
     return [for (final r in doomed) r.id];
   }
 
-  /// Delete one medicine's doses.
   Future<List<int>> deleteMedicine(String documentId, String label) async {
     final doomed = [
       for (final r in await forDocument(documentId))
@@ -102,14 +99,12 @@ class ReminderRepository {
     return doomed;
   }
 
-  /// Delete all reminders.
   Future<List<int>> deleteAll() async {
     final doomed = await all();
     await _db.delete(_db.reminders).go();
     return [for (final r in doomed) r.id];
   }
 
-  /// Delete finished courses.
   Future<List<int>> deleteFinished(DateTime now) async {
     final today = DateTime(now.year, now.month, now.day);
     final doomed = [

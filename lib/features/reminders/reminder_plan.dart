@@ -1,15 +1,15 @@
-/// One notification per dose time.
 library;
 
 import 'reminder.dart';
 
-/// Daily-repeat ids: minute-of-day (0–1439).
 const _datedBase = 10000;
-
-/// Dated alarms booked ahead; relaunch re-plans.
 const _horizonDays = 60;
+const _courseEndBase = 500000;
+const _courseEndOffsetMinutes = 60;
 
-/// One scheduled alarm.
+DateTime _atMinute(DateTime day, int minuteOfDay) =>
+    DateTime(day.year, day.month, day.day, 0, minuteOfDay);
+
 class PlannedNotification {
   const PlannedNotification({
     required this.id,
@@ -18,6 +18,7 @@ class PlannedNotification {
     required this.body,
     required this.doseIds,
     this.repeatDaily = false,
+    this.courseEnd = false,
   });
 
   final int id;
@@ -25,16 +26,14 @@ class PlannedNotification {
   final String title;
   final String body;
 
-  /// Dose ids for Taken.
   final List<int> doseIds;
   final bool repeatDaily;
+  final bool courseEnd;
 
-  /// Payload for the action isolate.
   String get payload =>
       '${doseIds.join(',')}|${at.year}-${at.month}-${at.day}';
 }
 
-/// Build alarms from current reminders.
 List<PlannedNotification> planNotifications(
   List<MedicineReminder> all,
   DateTime now,
@@ -49,7 +48,48 @@ List<PlannedNotification> planNotifications(
   for (final entry in slots.entries) {
     planned.addAll(_planSlot(entry.key, entry.value, now, today));
   }
+  planned.addAll(_planCourseEnds(all, now));
   planned.sort((a, b) => a.at.compareTo(b.at));
+  return planned;
+}
+
+List<PlannedNotification> _planCourseEnds(
+  List<MedicineReminder> all,
+  DateTime now,
+) {
+  final courses = <String, List<MedicineReminder>>{};
+  for (final r in all) {
+    final end = r.endDate;
+    if (!r.enabled || end == null) continue;
+    courses
+        .putIfAbsent('${r.documentId}|${end.toIso8601String()}', () => [])
+        .add(r);
+  }
+
+  final planned = <PlannedNotification>[];
+  for (final course in courses.values) {
+    final end = course.first.endDate!;
+    var lastDose = course.first.minuteOfDay;
+    var lowestId = course.first.id;
+    final names = <String>{};
+    for (final r in course) {
+      if (r.minuteOfDay > lastDose) lastDose = r.minuteOfDay;
+      if (r.id < lowestId) lowestId = r.id;
+      names.add(r.medicineLabel);
+    }
+    final at = _atMinute(end, lastDose + _courseEndOffsetMinutes);
+    if (!at.isAfter(now)) continue;
+    planned.add(
+      PlannedNotification(
+        id: _courseEndBase + lowestId,
+        at: at,
+        title: 'Last day of this course',
+        body: names.join(', '),
+        doseIds: const [],
+        courseEnd: true,
+      ),
+    );
+  }
   return planned;
 }
 
@@ -63,7 +103,6 @@ List<PlannedNotification> _planSlot(
     for (final r in slot)
       if (r.endDate == null) r,
   ];
-  // Finite courses first; daily repeat starts after last end.
   DateTime? lastDated;
   for (final r in slot) {
     final end = r.endDate;
@@ -72,17 +111,17 @@ List<PlannedNotification> _planSlot(
     if (lastDated == null || day.isAfter(lastDated)) lastDated = day;
   }
 
-  // ponytail: past horizon → daily repeat; relaunch drops finished.
-  final horizon = today.add(const Duration(days: _horizonDays));
+  // ponytail: over-horizon → daily repeat.
+  final horizon = addDays(today, _horizonDays);
   final overHorizon = lastDated != null && lastDated.isAfter(horizon);
 
   final planned = <PlannedNotification>[];
   var repeatFrom = today;
 
   if (lastDated != null && !overHorizon) {
-    for (var i = 0; i <= lastDated.difference(today).inDays; i++) {
-      final day = today.add(Duration(days: i));
-      final at = day.add(Duration(minutes: minuteOfDay));
+    for (var i = 0; i <= daysBetween(today, lastDated); i++) {
+      final day = addDays(today, i);
+      final at = _atMinute(day, minuteOfDay);
       final due = [
         for (final r in slot)
           if (r.endDate != null && r.coversDay(day)) r,
@@ -97,14 +136,13 @@ List<PlannedNotification> _planSlot(
         ),
       );
     }
-    repeatFrom = lastDated.add(const Duration(days: 1));
+    repeatFrom = addDays(lastDated, 1);
   }
 
-  // Open-ended or over-horizon → daily repeat.
   final repeating = overHorizon ? slot : openEnded;
   if (repeating.isNotEmpty) {
-    var at = repeatFrom.add(Duration(minutes: minuteOfDay));
-    if (!at.isAfter(now)) at = at.add(const Duration(days: 1));
+    var at = _atMinute(repeatFrom, minuteOfDay);
+    if (!at.isAfter(now)) at = _atMinute(addDays(repeatFrom, 1), minuteOfDay);
     planned.add(
       _notification(
         id: minuteOfDay,

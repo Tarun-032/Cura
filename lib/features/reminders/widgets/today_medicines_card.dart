@@ -7,7 +7,6 @@ import '../../library/document.dart';
 import '../reminder.dart';
 import '../reminder_screen.dart';
 
-/// Today card: doses by prescription (hidden if empty).
 class TodayMedicinesCard extends ConsumerStatefulWidget {
   const TodayMedicinesCard({super.key});
 
@@ -16,11 +15,8 @@ class TodayMedicinesCard extends ConsumerStatefulWidget {
 }
 
 class _TodayMedicinesCardState extends ConsumerState<TodayMedicinesCard> {
-  /// Expanded prescription ids.
   final _open = <String>{};
   bool _doneOpen = false;
-
-  /// Visible rows before "N more".
   static const _maxRows = 3;
 
   @override
@@ -33,7 +29,6 @@ class _TodayMedicinesCardState extends ConsumerState<TodayMedicinesCard> {
     final textTheme = Theme.of(context).textTheme;
     final docs = ref.watch(documentsProvider).value ?? const <CuraDocument>[];
 
-    // Group by prescription.
     final groups = <String, List<MedicineReminder>>{};
     for (final dose in due) {
       groups.putIfAbsent(dose.documentId, () => []).add(dose);
@@ -149,7 +144,6 @@ class _TodayMedicinesCardState extends ConsumerState<TodayMedicinesCard> {
   );
 }
 
-/// Row padding (+ optional divider).
 class _Line extends StatelessWidget {
   const _Line({required this.child, this.divided = false});
 
@@ -170,7 +164,6 @@ class _Line extends StatelessWidget {
   }
 }
 
-/// One prescription row (expand for times).
 class _PrescriptionGroup extends ConsumerWidget {
   const _PrescriptionGroup({
     required this.title,
@@ -229,6 +222,13 @@ class _PrescriptionGroup extends ConsumerWidget {
                         color: AppColors.faint,
                       ),
                     ),
+                    if (courseProgress(doses, now) case final progress?)
+                      Text(
+                        progress,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: AppColors.secondary,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -294,7 +294,6 @@ class _PrescriptionGroup extends ConsumerWidget {
   }
 }
 
-/// Finished doses (collapsed).
 class _DoneSection extends ConsumerWidget {
   const _DoneSection({
     required this.doses,
@@ -351,7 +350,6 @@ class _DoneSection extends ConsumerWidget {
   }
 }
 
-/// Dose tick (strike-through when taken).
 class _DoseRow extends StatelessWidget {
   const _DoseRow({
     required this.dose,
@@ -398,7 +396,6 @@ class _DoseRow extends StatelessWidget {
   }
 }
 
-/// Footer / "N more" link.
 class _LinkRow extends StatelessWidget {
   const _LinkRow({required this.label, required this.onTap});
 
