@@ -1,14 +1,15 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart';
+import 'package:drift/native.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
 import '../../features/library/document.dart';
 
 part 'app_database.g.dart';
 
-/// Converts the [DocumentType] enum to/from its stable string name for storage.
-/// Using the name (not the index) keeps rows valid if the enum is reordered.
+/// DocumentType ↔ name string (stable if enum reordered).
 class _DocumentTypeConverter extends TypeConverter<DocumentType, String> {
   const _DocumentTypeConverter();
 
@@ -19,8 +20,7 @@ class _DocumentTypeConverter extends TypeConverter<DocumentType, String> {
   String toSql(DocumentType value) => value.name;
 }
 
-/// Stores the structured label→value results as a JSON array of [label, value]
-/// pairs, in-row rather than in a child table.
+/// Results as JSON in-row.
 class _ResultsConverter extends TypeConverter<List<DocumentResult>, String> {
   const _ResultsConverter();
 
@@ -69,7 +69,7 @@ class _ResultsConverter extends TypeConverter<List<DocumentResult>, String> {
   return (range: text.substring(0, nums.last.end).trim(), unit: suffix);
 }
 
-/// Stores the free-form tag list as a JSON string array.
+/// Tags as JSON array.
 class _TagsConverter extends TypeConverter<List<String>, String> {
   const _TagsConverter();
 
@@ -81,8 +81,7 @@ class _TagsConverter extends TypeConverter<List<String>, String> {
   String toSql(List<String> value) => jsonEncode(value);
 }
 
-/// One row per saved document. Mirrors [CuraDocument]; `results` and `tags` are
-/// JSON-encoded text columns so everything lives in a single table.
+/// One document row ([CuraDocument] shape).
 class Documents extends Table {
   TextColumn get id => text()();
   TextColumn get title => text()();
@@ -92,28 +91,24 @@ class Documents extends Table {
   TextColumn get results =>
       text().map(const _ResultsConverter()).withDefault(const Constant('[]'))();
   TextColumn get resultsNote => text().nullable()();
-  // The model's readable rewrite of [resultsNote]. Display only: resultsNote
-  // stays verbatim because Ask searches and quotes it.
+  // Readable rewrite of resultsNote (Ask keeps verbatim).
   TextColumn get summaryRewrite => text().nullable()();
-  // 'pending' (not yet attempted), 'retry' (one attempt failed), or null.
+  // pending | retry | null.
   TextColumn get summaryState => text().nullable()();
   TextColumn get tags =>
       text().map(const _TagsConverter()).withDefault(const Constant('[]'))();
-  // Legacy single-image path (v1/v2 rows). New scans write [filePaths] instead;
-  // kept so existing rows still resolve their one image.
+  // Legacy single-image path.
   TextColumn get filePath => text().nullable()();
-  // Ordered page-image paths as a JSON string array — a record can span several
-  // scanned pages. Null on legacy rows (fall back to [filePath]).
+  // Page paths JSON; null → filePath.
   TextColumn get filePaths => text().nullable()();
-  // Untouched source for records imported from PDF. Null for camera scans and
-  // legacy rows; page JPEGs remain in [filePaths] for OCR and previews.
+  // Imported PDF source; null for camera scans.
   TextColumn get sourcePdfPath => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
 }
 
-/// One saved Ask conversation. Title is derived from its first question.
+/// One Ask session.
 @DataClassName('ChatSessionRow')
 class ChatSessions extends Table {
   TextColumn get id => text()();
@@ -125,8 +120,7 @@ class ChatSessions extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// One message in a chat session. `sourceDocId` is the id of the document the
-/// answer cited (resolved back to a [CuraDocument] at render time), or null.
+/// One chat message (`sourceDocId` = cited doc, or null).
 @DataClassName('ChatMessageRow')
 class ChatMessages extends Table {
   TextColumn get id => text()();
@@ -140,50 +134,77 @@ class ChatMessages extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// The app's on-device SQLite database. Opened lazily in the app's private
-/// sandbox by [driftDatabase] — nothing leaves the device.
-@DriftDatabase(tables: [Documents, ChatSessions, ChatMessages])
+/// One dose time (`id` = notification id).
+@DataClassName('ReminderRow')
+class Reminders extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get documentId => text()();
+  TextColumn get medicineLabel => text()();
+
+  /// Minutes since midnight.
+  IntColumn get minuteOfDay => integer()();
+  DateTimeColumn get startDate => dateTime()();
+
+  /// Last day, or null if open-ended.
+  DateTimeColumn get endDate => dateTime().nullable()();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+
+  /// Last taken day.
+  DateTimeColumn get lastTakenDay => dateTime().nullable()();
+}
+
+/// On-device SQLite DB.
+@DriftDatabase(tables: [Documents, ChatSessions, ChatMessages, Reminders])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(driftDatabase(name: 'cura'));
   AppDatabase.forTesting(super.executor);
 
+  /// Same DB file for the notification isolate.
+  AppDatabase.background(File file) : super(NativeDatabase(file));
+
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) => m.createAll(),
     onUpgrade: (m, from, to) async {
-      // v1 → v2: add chat persistence. Existing Documents are untouched.
+      // v1 → v2: chat tables.
       if (from < 2) {
         await m.createTable(chatSessions);
         await m.createTable(chatMessages);
       }
-      // v2 → v3: multi-page records. Add the JSON page-list column; existing
-      // rows keep their single filePath and read it as a one-page fallback.
+      // v2 → v3: multi-page filePaths.
       if (from < 3) {
         await m.addColumn(documents, documents.filePaths);
       }
-      // v3 -> v4: retain the original PDF for imported records so exporting
-      // can preserve its searchable text, vectors, and native page sizes.
+      // v3 → v4: sourcePdfPath.
       if (from < 4) {
         await m.addColumn(documents, documents.sourcePdfPath);
       }
-      // v4 -> v5: a background-written readable summary beside the verbatim
-      // one. Existing rows stay null, so nothing old is ever queued.
+      // v4 → v5: summary rewrite columns.
       if (from < 5) {
         await m.addColumn(documents, documents.summaryRewrite);
         await m.addColumn(documents, documents.summaryState);
       }
-      // v5 -> v6: every rewrite written before this ran under a 512-token cap
-      // that cut long summaries mid-sentence. Drop them and let the queue redo
-      // them; the verbatim summary in resultsNote was never touched.
+      // v5 → v6: clear truncated rewrites for redo.
       if (from < 6) {
         await customStatement(
           "UPDATE documents SET summary_rewrite = NULL, summary_state = 'pending' "
           'WHERE summary_rewrite IS NOT NULL',
         );
       }
+      // v6 → v7: reminders table.
+      // Later Reminder columns need `else if` (createTable = current schema).
+      if (from < 7) {
+        await m.createTable(reminders);
+      } else if (from < 8) {
+        // v7 → v8: lastTakenDay.
+        await m.addColumn(reminders, reminders.lastTakenDay);
+      }
     },
   );
 }
+
+/// Drift DB filename under app documents.
+const kDatabaseFileName = 'cura.sqlite';

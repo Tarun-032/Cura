@@ -59,14 +59,21 @@ dependencies:
   pdf: ^3.11.3
   # Downscale camera JPEGs before embedding in the PDF (pure Dart, so it runs
   # in a background isolate). Already pulled in transitively by `pdf`; declared
-  # so we can import it directly.
-  image: ^4.9.1
+  # so we can import it directly. Held below 4.9: it wants xml ^7, which
+  # flutter_local_notifications' Windows sub-package will not take.
+  image: ^4.8.0
   # SAF "save file" dialog for the exported PDF — defaults to Downloads, no
   # storage permission or manifest change needed (scoped storage).
   file_picker: ^10.3.2
   # Plays the bundled onboarding logo intro. The clip is a local asset, so this
   # makes no network calls — see the privacy stance in README.md.
   video_player: ^2.9.2
+  # Medicine reminders (features/reminders/), scheduled on-device. Held at 20.x:
+  # 21+ needs Android Gradle Plugin 8.11.1 and this project is on 8.9.1.
+  flutter_local_notifications: ^20.0.0
+  # zonedSchedule needs a timezone database and the device's zone name.
+  timezone: ^0.10.0
+  flutter_timezone: ^4.1.1
 
 dev_dependencies:
   flutter_test:

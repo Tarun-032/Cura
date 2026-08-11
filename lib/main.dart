@@ -4,12 +4,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/theme/app_colors.dart';
 import 'app/theme/app_theme.dart';
 import 'features/ask/ask_prompt_rotation.dart';
+import 'core/data/providers.dart';
 import 'features/library/home_screen.dart';
 import 'features/onboarding/onboarding_flow.dart';
 import 'features/onboarding/onboarding_screen.dart';
+import 'features/reminders/reminder_service.dart';
 import 'features/security/app_lock.dart';
 
 void main() {
+  // Needed before reminder plugin init.
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: CuraApp()));
 }
 
@@ -27,24 +31,51 @@ class CuraApp extends StatelessWidget {
   }
 }
 
-/// Chooses the first screen from the [kOnboardedKey] flag: onboarding on first
-/// launch, Home after. Shows a plain canvas while reading, and defaults to
-/// onboarding if the flag can't be read.
-class _RootGate extends StatefulWidget {
+/// First screen from onboarded flag.
+class _RootGate extends ConsumerStatefulWidget {
   const _RootGate();
 
   @override
-  State<_RootGate> createState() => _RootGateState();
+  ConsumerState<_RootGate> createState() => _RootGateState();
 }
 
-class _RootGateState extends State<_RootGate> {
+class _RootGateState extends ConsumerState<_RootGate>
+    with WidgetsBindingObserver {
   bool? _onboarded;
   String _homeAskExample = kHomeAskExamples.first;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+    _restoreReminders();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Taken writes from another isolate; refresh on resume.
+    if (state == AppLifecycleState.resumed) {
+      ref.invalidate(remindersProvider);
+    }
+  }
+
+  /// Clear finished + rebook (fire-and-forget).
+  Future<void> _restoreReminders() async {
+    try {
+      final reminders = ref.read(reminderRepositoryProvider);
+      await reminders.deleteFinished(DateTime.now());
+      await ref.read(reminderServiceProvider).sync(await reminders.all());
+    } catch (error) {
+      // Don't block startup.
+      debugPrint('[Cura.reminders] restore failed: $error');
+    }
   }
 
   Future<void> _load() async {

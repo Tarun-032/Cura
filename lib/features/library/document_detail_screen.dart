@@ -9,13 +9,13 @@ import '../../core/widgets/document_image.dart';
 import '../../core/widgets/hatched_placeholder.dart';
 import '../../core/widgets/working_label.dart';
 import '../export/pdf_exporter.dart';
+import '../reminders/widgets/set_reminder_button.dart';
 import '../scan/review_document_screen.dart';
 import '../scan/summary_rewriter.dart';
 import 'document.dart';
 import 'manual_entry_screen.dart';
 
-/// View a single saved document: the document is the
-/// hero; actions (Export / Edit / Delete) are quiet. All actions are local.
+/// Saved document detail (local actions only).
 class DocumentDetailScreen extends ConsumerStatefulWidget {
   const DocumentDetailScreen({
     super.key,
@@ -42,10 +42,7 @@ class _DocumentDetailScreenState extends ConsumerState<DocumentDetailScreen> {
     _document = widget.document;
   }
 
-  /// Re-reads the stored row so a background summary rewrite lands on an open
-  /// page, and keeps [_document] on it so Export and Edit see it too. Falls back
-  /// to the local copy while the stream loads, and after a delete, when the row
-  /// is gone but this screen is still popping.
+  /// Live row from store; keep local copy as fallback.
   CuraDocument _syncFromStore() {
     for (final row in ref.watch(documentsProvider).value ?? const []) {
       if (row.id == _document.id) return _document = row;
@@ -54,8 +51,7 @@ class _DocumentDetailScreenState extends ConsumerState<DocumentDetailScreen> {
   }
 
   Future<void> _edit() async {
-    // Manually created records edit through their own form. Scanned
-    // prescriptions use Review's combined editable Summary + Medicines shape.
+    // Manual → form; scanned Rx → Review.
     final manual = _document.id.startsWith('manual-');
     final result = await Navigator.of(context).push<CuraDocument>(
       MaterialPageRoute(
@@ -106,9 +102,7 @@ class _DocumentDetailScreenState extends ConsumerState<DocumentDetailScreen> {
       );
   }
 
-  /// Exports this document's scanned pages as a PDF via the system save dialog
-  /// (defaults to Downloads). A brief modal covers generation; the SAF dialog
-  /// then takes over the screen, so no percent progress is needed for one doc.
+  /// Export pages as PDF via system saver.
   Future<void> _exportPdf() async {
     if (_document.pages.isEmpty) {
       _toast('No scanned pages to export');
@@ -168,7 +162,7 @@ class _DocumentDetailScreenState extends ConsumerState<DocumentDetailScreen> {
     } else if (outcome == ExportOutcome.saved) {
       _toast('PDF saved');
     }
-    // Cancelled save dialog: stay silent — the user chose to back out.
+    // Cancelled → silent.
   }
 
   @override
@@ -381,9 +375,7 @@ class _ResultsCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 13),
               child: Row(
                 children: [
-                  // Both sides are flexible, so a long reference interval
-                  // wraps inside its own column instead of taking the row and
-                  // squeezing the test name down to one letter per line.
+                  // Flex both sides so long ranges wrap.
                   Expanded(
                     flex: 3,
                     child: Text(
@@ -413,8 +405,7 @@ class _ResultsCard extends StatelessWidget {
                             color: AppColors.ink,
                           ),
                         ),
-                        // A "normal range" means nothing on a receipt row; the
-                        // parser never sets one, but a hand-edited record could.
+                        // Skip range on receipt-like rows.
                         if (document.results[i].range != null &&
                             document.type != DocumentType.receipt) ...[
                           const SizedBox(height: 2),
@@ -454,6 +445,7 @@ class _PrescriptionMedicinesCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    // Saved id is safe for reminders.
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -464,29 +456,57 @@ class _PrescriptionMedicinesCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Medicines', style: textTheme.titleMedium),
+          Row(
+            children: [
+              Expanded(
+                child: Text('Medicines', style: textTheme.titleMedium),
+              ),
+              RemindAllButton(
+                documentId: document.id,
+                documentTitle: document.title,
+                medicines: [
+                  for (final r in document.results)
+                    (label: r.label, directions: r.value),
+                ],
+              ),
+            ],
+          ),
           const SizedBox(height: 6),
           for (var i = 0; i < document.results.length; i++) ...[
             if (i > 0) const Divider(height: 1, color: AppColors.divider),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Text(
-                    document.results[i].label.trim().isEmpty
-                        ? 'Medicine'
-                        : document.results[i].label,
-                    style: textTheme.bodyMedium?.copyWith(
-                      color: AppColors.secondary,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          document.results[i].label.trim().isEmpty
+                              ? 'Medicine'
+                              : document.results[i].label,
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: AppColors.secondary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          document.results[i].value.trim().isEmpty
+                              ? 'Directions not captured'
+                              : document.results[i].valueWithUnit,
+                          style: textTheme.bodyMedium,
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    document.results[i].value.trim().isEmpty
-                        ? 'Directions not captured'
-                        : document.results[i].valueWithUnit,
-                    style: textTheme.bodyMedium,
+                  const SizedBox(width: 8),
+                  SetReminderButton(
+                    documentId: document.id,
+                    documentTitle: document.title,
+                    medicineLabel: document.results[i].label,
+                    directions: document.results[i].value,
                   ),
                 ],
               ),
@@ -498,16 +518,13 @@ class _PrescriptionMedicinesCard extends StatelessWidget {
   }
 }
 
-/// The report's own Findings / Impression, verbatim, shown when there is no
-/// results table. Stateful only for the scroll controller: a long summary
-/// scrolls inside the card rather than pushing the actions down the page.
+/// Verbatim summary when there's no results table.
 class _SummaryCard extends StatefulWidget {
   const _SummaryCard({required this.text, this.rewriting = false});
 
   final String text;
 
-  /// The model is still turning the scraped sections into readable prose. The
-  /// deterministic text below stays readable meanwhile.
+  /// Rewrite still running; show raw text meanwhile.
   final bool rewriting;
 
   @override

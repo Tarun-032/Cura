@@ -12,6 +12,7 @@ import '../ask/ask_screen.dart';
 import '../ask/ask_prompt_rotation.dart';
 import '../export/export_selection_screen.dart';
 import '../pdf_import/pdf_import_service.dart';
+import '../reminders/reminder_service.dart';
 import '../scan/document_shape.dart';
 import '../scan/review_document_screen.dart';
 import '../scan/scan_service.dart';
@@ -273,10 +274,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ) &&
           (await ref.read(remoteAiStoreProvider).remoteActive() ||
               await ref.read(aiModelManagerProvider).installedModel() != null);
-      await ref
-          .read(documentRepositoryProvider)
-          .add(queued ? doc.copyWith(summaryState: kSummaryPending) : doc);
+      final saved = queued ? doc.copyWith(summaryState: kSummaryPending) : doc;
+      await ref.read(documentRepositoryProvider).add(saved);
       if (queued) unawaited(ref.read(summaryRewriterProvider).sweep());
+      // Point to the saved record for reminders.
+      if (mounted &&
+          saved.type == DocumentType.prescription &&
+          saved.results.isNotEmpty) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Saved. Set reminders on any medicine, or from the bell on '
+                'Home.',
+              ),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 6),
+              action: SnackBarAction(
+                label: 'Open',
+                onPressed: () => _openDocument(saved),
+              ),
+            ),
+          );
+      }
     } else {
       await _discardSource(current);
     }
@@ -395,6 +416,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _deleteDocument(CuraDocument doc) async {
     await ref.read(documentRepositoryProvider).delete(doc.id);
+    // Clear reminders with the doc.
+    final reminders = ref.read(reminderRepositoryProvider);
+    await reminders.deleteForDocument(doc.id);
+    await ref.read(reminderServiceProvider).sync(await reminders.all());
     if (doc.sourcePdfPath != null) {
       await ref
           .read(pdfImportServiceProvider)
@@ -476,6 +501,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
     if (confirmed == true) {
       await ref.read(documentRepositoryProvider).deleteAll();
+      await ref.read(reminderRepositoryProvider).deleteAll();
+      await ref.read(reminderServiceProvider).sync(const []);
       await ref.read(scanServiceProvider).deleteAllImages();
       await ref.read(pdfImportServiceProvider).deleteAllImports();
       // Wipe the cloud key too.
@@ -493,7 +520,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
   }
 
-  // Confirm before leaving the app when back is pressed on the Home tab.
+  // Confirm exit on Home back.
   Future<bool> _confirmQuit() async {
     final quit = await showDialog<bool>(
       context: context,

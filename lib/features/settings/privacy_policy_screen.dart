@@ -3,8 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/theme/app_colors.dart';
 
-/// A readable in-app copy of Cura's privacy policy, covering both the default
-/// local processing and the optional provider connection.
+/// In-app privacy policy.
 class PrivacyPolicyScreen extends StatelessWidget {
   const PrivacyPolicyScreen({super.key});
 
@@ -99,6 +98,10 @@ class PrivacyPolicyScreen extends StatelessWidget {
                             'document cited in an answer.',
                         'Temporary microphone recordings and their '
                             'transcriptions when you choose voice input.',
+                        'Medicine reminders you set: the medicine name as your '
+                            'prescription printed it, the dose times, how long '
+                            'the course runs, and the day you last ticked a '
+                            'dose off as taken.',
                         'App preferences, model selections, cloud provider '
                             'settings, consent status, and downloaded model '
                             'files.',
@@ -339,6 +342,14 @@ class PrivacyPolicyScreen extends StatelessWidget {
                             'through the Google Play services document scanner. '
                             'Cura does not declare a separate Android camera '
                             'permission.',
+                        'Medicine reminders use notification and alarm '
+                            'permissions. Reminders are scheduled by your phone '
+                            'and delivered by your phone. Medicine names and dose '
+                            'times are never sent anywhere, and setting a '
+                            'reminder makes no network request.',
+                        'The restart permission lets Cura put your existing '
+                            'reminders back after the phone reboots. It reads '
+                            'nothing and sends nothing.',
                       ],
                     ),
                     _PolicySection(
@@ -352,11 +363,12 @@ class PrivacyPolicyScreen extends StatelessWidget {
                       ],
                       bullets: [
                         'Deleting an individual document removes its database '
-                            'record and associated private scan or import files.',
+                            'record, associated private scan or import files, '
+                            'and any medicine reminders set from it.',
                         'Delete all data removes saved documents, private scan '
-                            'images, retained imported PDFs, the cloud API key, '
-                            'and cloud configuration. It switches Cura back to '
-                            'the on-device engine.',
+                            'images, retained imported PDFs, medicine reminders, '
+                            'the cloud API key, and cloud configuration. It '
+                            'switches Cura back to the on-device engine.',
                         'Ask conversations can be deleted individually from '
                             'Ask. Downloaded AI and voice model files can be '
                             'deleted from their Settings sections.',

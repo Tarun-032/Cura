@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../../app/theme/app_colors.dart';
+import '../reminders/widgets/reminder_bell.dart';
+import '../reminders/widgets/today_medicines_card.dart';
 import 'document.dart';
 import 'document_search.dart';
 import 'widgets/ask_records_card.dart';
 import 'widgets/document_row.dart';
 
-/// Populated Home: greeting, search, filter chips, the "Ask your records" card
-/// and the recent document list.
+/// Home list: greeting, search, filters, docs.
 class LibraryView extends StatefulWidget {
   const LibraryView({
     super.key,
@@ -44,7 +45,7 @@ class _LibraryViewState extends State<LibraryView> {
 
   bool get _searching => _query.trim().isNotEmpty;
 
-  /// The type chip narrows first, then the text query narrows further.
+  /// Type chip, then text query.
   List<CuraDocument> get _filtered {
     var list = widget.documents;
     final f = _filter;
@@ -68,16 +69,26 @@ class _LibraryViewState extends State<LibraryView> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 96),
       children: [
-        // Header.
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        // Header + bell.
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Text(
-              _greeting,
-              style: textTheme.bodySmall?.copyWith(color: AppColors.secondary),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _greeting,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: AppColors.secondary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text('Your records', style: textTheme.headlineMedium),
+                ],
+              ),
             ),
-            const SizedBox(height: 2),
-            Text('Your records', style: textTheme.headlineMedium),
+            const ReminderBell(),
           ],
         ).animate().fadeIn(duration: _enter).slideY(begin: 0.15, curve: _curve),
 
@@ -105,6 +116,9 @@ class _LibraryViewState extends State<LibraryView> {
             .fadeIn(duration: _enter, delay: 120.ms)
             .slideY(begin: 0.15, curve: _curve),
 
+        // Hides itself when empty.
+        const TodayMedicinesCard(),
+
         const SizedBox(height: 22),
         Text(_searching ? 'Results' : 'Recent', style: textTheme.bodySmall)
             .animate()
@@ -130,15 +144,13 @@ class _LibraryViewState extends State<LibraryView> {
     );
   }
 
-  // A document row — animated into place on first load, but rendered instantly
-  // while searching so results snap in as the query changes (no stagger flicker).
+  // Animate on load; skip while searching.
   Widget _row(CuraDocument doc, int i) {
     final row = DocumentRow(
       document: doc,
       onTap: () => widget.onOpenDocument(doc),
     );
-    // Only the first screenful animates in. Rows below the fold mount when
-    // scrolled into view, so a delayed fade there shows as a blank row.
+    // Only first screenful animates (avoids blank below fold).
     if (_searching || i > 6) return row;
     return row
         .animate()
@@ -147,8 +159,7 @@ class _LibraryViewState extends State<LibraryView> {
   }
 }
 
-/// Live keyword search over the saved documents. Filtering happens in
-/// [LibraryView]; this just reports what the user types (and offers a clear ✕).
+/// Search field (filters live in [LibraryView]).
 class _SearchField extends StatelessWidget {
   const _SearchField({required this.controller, required this.onChanged});
 
@@ -185,7 +196,7 @@ class _SearchField extends StatelessWidget {
               ),
             ),
           ),
-          // Clear button, shown only when there's something to clear.
+          // Clear when non-empty.
           ValueListenableBuilder<TextEditingValue>(
             valueListenable: controller,
             builder: (context, value, _) => value.text.isEmpty
