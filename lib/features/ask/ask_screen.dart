@@ -110,11 +110,14 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
 
-  // Follow the active answer.
-  bool _following = true;
+  // Follow the active answer. A notifier so only the pill rebuilds on scroll.
+  final _following = ValueNotifier(true);
 
   // A finger is on the thread.
   bool _touching = false;
+
+  /// Marks the last question, so a reopened chat lands there.
+  final _lastQuestionKey = GlobalKey();
 
   // On-device voice input.
   final _voice = VoiceInputController();
@@ -180,6 +183,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _input.dispose();
     _inputFocus.dispose();
     _scroll.dispose();
+    _following.dispose();
     super.dispose();
   }
 
@@ -289,7 +293,7 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     });
     _input.clear();
     // Re-arm auto-follow for the new question.
-    _following = true;
+    _following.value = true;
     _scrollToEnd();
 
     _sessionId ??= (await repo.createSession(_titleFor(text))).id;
@@ -571,7 +575,28 @@ class _AskScreenState extends ConsumerState<AskScreen> {
       _editingIndex = null;
     });
     _input.clear();
-    _scrollToEnd();
+    _following.value = true;
+    _showLastQuestion();
+  }
+
+  /// Opens a saved chat at its last question rather than the very bottom, so
+  /// reading resumes where it stopped.
+  void _showLastQuestion() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _lastQuestionKey.currentContext;
+      if (ctx == null) {
+        _scrollToEnd();
+        return;
+      }
+      // Clamps at the end on its own, so a short thread still sits at the base.
+      unawaited(
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        ),
+      );
+    });
   }
 
   /// Load the last question back into the composer.
@@ -587,14 +612,16 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     _input.clear();
   }
 
-  /// The last question, if it can be edited.
-  int? get _editableIndex {
-    if (_busy) return null;
+  /// The last question asked.
+  int? get _lastUserIndex {
     for (var i = _messages.length - 1; i >= 0; i--) {
       if (_messages[i].role == ChatRole.user) return i;
     }
     return null;
   }
+
+  /// The last question, if it can be edited.
+  int? get _editableIndex => _busy ? null : _lastUserIndex;
 
   void _openHistory() {
     showModalBottomSheet<void>(
@@ -636,6 +663,8 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   }
 
   void _scrollToEnd() {
+    // The reader moved away, so leave them there.
+    if (!_following.value) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
@@ -653,17 +682,17 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   /// Dragging back stops auto-follow.
   bool _onScrollNotification(ScrollNotification n) {
     if (n is UserScrollNotification) {
-      if (n.direction == ScrollDirection.forward) _following = false;
+      if (n.direction == ScrollDirection.forward) _following.value = false;
     } else if (n is ScrollEndNotification) {
       final m = n.metrics;
-      _following = m.maxScrollExtent - m.pixels <= _kFollowSlack;
+      _following.value = m.maxScrollExtent - m.pixels <= _kFollowSlack;
     }
     return false;
   }
 
   // Keep the view pinned without animation.
   void _scrollToEndGentle() {
-    if (!_following || _touching) return;
+    if (!_following.value || _touching) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
@@ -882,54 +911,85 @@ class _AskScreenState extends ConsumerState<AskScreen> {
 
               // Thread.
               Expanded(
-                child: Listener(
-                  onPointerDown: (_) => _touching = true,
-                  onPointerUp: (_) => _touching = false,
-                  onPointerCancel: (_) => _touching = false,
-                  child: NotificationListener<ScrollNotification>(
-                    onNotification: _onScrollNotification,
-                    child: ListView(
-                      controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-                      children: [
-                        if (_messages.isEmpty)
-                          _MessageBubble(
-                            message: ChatMessage(
-                              role: ChatRole.assistant,
-                              text: widget.prompts.welcome,
-                            ),
-                            onViewSource: widget.onOpenDocument,
-                          ),
-                        for (var i = 0; i < _messages.length; i++)
-                          if (_messages[i].role == ChatRole.notice)
-                            _ModelNotice(
-                              label: _messages[i].text,
-                              first: i == 0,
-                            )
-                          else
-                            _MessageBubble(
-                              message: _messages[i],
-                              onViewSource: widget.onOpenDocument,
-                              // Only the last question offers Edit.
-                              onEdit:
-                                  i == _editableIndex && _editingIndex == null
-                                  ? () => _editLastQuestion(i)
-                                  : null,
-                            ),
-                        // Only while waiting for the first token; once the
-                        // assistant bubble exists it grows in place instead.
-                        if (_busy &&
-                            (_messages.isEmpty ||
-                                _messages.last.role == ChatRole.user))
-                          const _TypingBubble(),
-                        if (_showSuggestions)
-                          _Suggestions(
-                            items: widget.prompts.suggestions,
-                            onTap: _send,
-                          ),
-                      ],
+                child: Stack(
+                  children: [
+                    Listener(
+                      onPointerDown: (_) => _touching = true,
+                      onPointerUp: (_) => _touching = false,
+                      onPointerCancel: (_) => _touching = false,
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: _onScrollNotification,
+                        child: ListView(
+                          controller: _scroll,
+                          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+                          children: [
+                            if (_messages.isEmpty)
+                              _MessageBubble(
+                                message: ChatMessage(
+                                  role: ChatRole.assistant,
+                                  text: widget.prompts.welcome,
+                                ),
+                                onViewSource: widget.onOpenDocument,
+                              ),
+                            for (var i = 0; i < _messages.length; i++)
+                              if (_messages[i].role == ChatRole.notice)
+                                _ModelNotice(
+                                  label: _messages[i].text,
+                                  first: i == 0,
+                                )
+                              else
+                                KeyedSubtree(
+                                  // Scroll anchor for a reopened chat.
+                                  key: i == _lastUserIndex
+                                      ? _lastQuestionKey
+                                      : null,
+                                  child: _MessageBubble(
+                                    message: _messages[i],
+                                    onViewSource: widget.onOpenDocument,
+                                    // Only the last question offers Edit.
+                                    onEdit:
+                                        i == _editableIndex &&
+                                            _editingIndex == null
+                                        ? () => _editLastQuestion(i)
+                                        : null,
+                                  ),
+                                ),
+                            // Only while waiting for the first token; once the
+                            // assistant bubble exists it grows in place instead.
+                            if (_busy &&
+                                (_messages.isEmpty ||
+                                    _messages.last.role == ChatRole.user))
+                              const _TypingBubble(),
+                            if (_showSuggestions)
+                              _Suggestions(
+                                items: widget.prompts.suggestions,
+                                onTap: _send,
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                    // Says the answer is still coming, and takes you back to it.
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 10,
+                      child: ValueListenableBuilder<bool>(
+                        valueListenable: _following,
+                        builder: (context, following, _) => following
+                            ? const SizedBox.shrink()
+                            : Center(
+                                child: _JumpToLatest(
+                                  busy: _busy,
+                                  onTap: () {
+                                    _following.value = true;
+                                    _scrollToEnd();
+                                  },
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
@@ -1410,6 +1470,61 @@ class _ModelNotice extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Shown only when the reader has scrolled off the live edge.
+class _JumpToLatest extends StatelessWidget {
+  const _JumpToLatest({required this.busy, required this.onTap});
+
+  /// An answer is still streaming out of view.
+  final bool busy;
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = busy ? 'Answering' : 'Jump to latest';
+    return Semantics(
+          button: true,
+          label: label,
+          child: Material(
+            color: AppColors.surface,
+            shape: StadiumBorder(
+              side: const BorderSide(color: AppColors.hairline),
+            ),
+            elevation: 2,
+            shadowColor: AppColors.ink.withValues(alpha: 0.18),
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      label,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    const Icon(
+                      Icons.arrow_downward_rounded,
+                      size: 15,
+                      color: AppColors.accent,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        )
+        .animate()
+        .fadeIn(duration: 180.ms)
+        .slideY(begin: 0.4, curve: Curves.easeOutCubic);
   }
 }
 
