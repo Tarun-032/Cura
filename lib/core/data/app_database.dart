@@ -35,6 +35,7 @@ class _ResultsConverter extends TypeConverter<List<DocumentResult>, String> {
         map['value'] as String,
         unit: map['unit'] as String? ?? legacy.unit,
         range: legacy.range,
+        labFlag: map['labFlag'] as String?,
       );
     }).toList();
   }
@@ -48,6 +49,7 @@ class _ResultsConverter extends TypeConverter<List<DocumentResult>, String> {
             'value': r.value,
             if (r.unit != null) 'unit': r.unit,
             if (r.range != null) 'range': r.range,
+            if (r.labFlag != null) 'labFlag': r.labFlag,
           },
         )
         .toList(),

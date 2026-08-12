@@ -1,5 +1,5 @@
-import '../../core/util/range_status.dart';
 import '../library/document.dart';
+import '../library/result_range.dart';
 import '../scan/receipt_parser.dart'
     show isFinalReceiptAmountLabel, isReceiptSummaryLabel;
 import 'retrieval.dart';
@@ -937,31 +937,23 @@ String _inSentence(String label) {
 String _rangeClause(DocumentResult r) {
   final range = r.range;
   if (range == null || range.trim().isEmpty) return '';
-  switch (rangeStatus(r.value, range)) {
-    case 'within':
-      return ', within the normal range ($range)';
-    case 'above':
-      return ', above the normal range ($range)';
-    case 'below':
-      return ', below the normal range ($range)';
-    default:
-      return ' (reference range: $range)';
-  }
+  // Prefer band name over long interval.
+  final band = bandFor(r);
+  final shown = band?.name ?? rangeText(r) ?? range;
+  final phrase = _rangeStatusPhrase(r);
+  if (phrase != null) return ', $phrase ($shown)';
+  if (band != null) return ' ($shown)';
+  return ' (reference range: $shown)';
 }
 
 String? _rangeStatusPhrase(DocumentResult r) {
-  final range = r.range;
-  if (range == null || range.trim().isEmpty) return null;
-  switch (rangeStatus(r.value, range)) {
-    case 'within':
-      return 'within the normal range';
-    case 'above':
-      return 'above the normal range';
-    case 'below':
-      return 'below the normal range';
-    default:
-      return null;
-  }
+  if (r.range == null || r.range!.trim().isEmpty) return null;
+  return switch (verdictFor(r)) {
+    RangeVerdict.inRange => 'within the normal range',
+    RangeVerdict.high => 'above the normal range',
+    RangeVerdict.low => 'below the normal range',
+    RangeVerdict.unknown => null,
+  };
 }
 
 /// "Hemoglobin 14.2 g/dL, White blood cells 6.1 ×10⁹/L, …"

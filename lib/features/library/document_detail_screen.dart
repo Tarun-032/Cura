@@ -14,6 +14,7 @@ import '../scan/review_document_screen.dart';
 import '../scan/summary_rewriter.dart';
 import 'document.dart';
 import 'manual_entry_screen.dart';
+import 'result_range.dart';
 
 /// Saved document detail (local actions only).
 class DocumentDetailScreen extends ConsumerStatefulWidget {
@@ -349,6 +350,16 @@ class _ResultsCard extends StatelessWidget {
 
   final CuraDocument document;
 
+  /// Live count; drop stale stored "N results" notes.
+  String? get _note {
+    if (document.type == DocumentType.receipt) return document.resultsNote;
+    final live = resultsSummary(document.results);
+    if (live != null) return live;
+    final stored = document.resultsNote;
+    if (stored == null) return null;
+    return RegExp(r'^\d+ results?\b').hasMatch(stored) ? null : stored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -406,18 +417,8 @@ class _ResultsCard extends StatelessWidget {
                           ),
                         ),
                         // Skip range on receipt-like rows.
-                        if (document.results[i].range != null &&
-                            document.type != DocumentType.receipt) ...[
-                          const SizedBox(height: 2),
-                          Text(
-                            document.results[i].range!,
-                            textAlign: TextAlign.end,
-                            style: textTheme.bodySmall?.copyWith(
-                              color: AppColors.faint,
-                              fontSize: 11.5,
-                            ),
-                          ),
-                        ],
+                        if (document.type != DocumentType.receipt)
+                          _VerdictLine(result: document.results[i]),
                       ],
                     ),
                   ),
@@ -425,13 +426,65 @@ class _ResultsCard extends StatelessWidget {
               ),
             ),
           ],
-          if (document.resultsNote != null) ...[
+          if (_note case final note?) ...[
             const SizedBox(height: 4),
-            Text(document.resultsNote!, style: textTheme.bodySmall),
+            Text(note, style: textTheme.bodySmall),
             const SizedBox(height: 14),
           ] else
             const SizedBox(height: 8),
         ],
+      ),
+    );
+  }
+}
+
+/// Range line; Low/High when sure.
+class _VerdictLine extends StatelessWidget {
+  const _VerdictLine({required this.result});
+
+  final DocumentResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(color: AppColors.faint, fontSize: 11.5);
+    final verdict = verdictFor(result).label;
+    final band = bandFor(result);
+    // Band name beats long interval.
+    final String? flagged;
+    final String? plain;
+    if (verdict != null) {
+      flagged = verdict;
+      plain = band?.name ?? rangeText(result);
+    } else if (band != null) {
+      // No bounds → band is the verdict.
+      flagged = band.abnormal ? band.name : null;
+      plain = band.abnormal ? null : band.name;
+    } else {
+      flagged = null;
+      plain = rangeText(result);
+    }
+    if (flagged == null && plain == null) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            if (flagged != null)
+              TextSpan(
+                text: plain == null ? flagged : '$flagged · ',
+                style: style?.copyWith(
+                  color: AppColors.destructive,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            if (plain != null) TextSpan(text: plain),
+          ],
+        ),
+        textAlign: TextAlign.end,
+        style: style,
       ),
     );
   }

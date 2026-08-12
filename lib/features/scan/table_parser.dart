@@ -342,7 +342,8 @@ DocumentResult? _repairIncompleteResult(
     return _digit.hasMatch(normalized);
   }).toList();
   if (values.length != 1) return null;
-  final value = _stripFlags(_fixNumeric(values.single.text)).trim();
+  final fixedValue = _fixNumeric(values.single.text);
+  final value = _stripFlags(fixedValue).trim();
   final units = cells
       .where(
         (cell) =>
@@ -376,6 +377,7 @@ DocumentResult? _repairIncompleteResult(
     range: splitRange.range?.trim().isNotEmpty ?? false
         ? splitRange.range!.trim()
         : result.range,
+    labFlag: _labFlag(fixedValue) ?? result.labFlag,
   );
 }
 
@@ -643,7 +645,8 @@ bool _hasElementValueConflict(
 }
 
 List<DocumentResult> _parseResultsTable(List<OcrLine> lines) {
-  final region = _tableRegion(lines)..sort((a, b) => a.top.compareTo(b.top));
+  final region = _collapseBandLines(_tableRegion(lines))
+    ..sort((a, b) => a.top.compareTo(b.top));
   if (region.isEmpty) return const [];
 
   // Carry a numeric-repaired copy alongside each line; classify on the repaired
@@ -767,7 +770,9 @@ List<DocumentResult> _parseResultsTable(List<OcrLine> lines) {
   final out = <DocumentResult>[];
   for (var i = 0; i < realLabels.length; i++) {
     var label = _cleanLabel(realLabels[i].original); // labels never altered
-    var value = _stripFlags(_fixUnits(rowValues[i]?.norm.trim() ?? ''));
+    final rawValue = _fixUnits(rowValues[i]?.norm.trim() ?? '');
+    var value = _stripFlags(rawValue);
+    var labFlag = _labFlag(rawValue);
     // ML Kit sometimes keeps the observed value inside the final label element.
     // Recover only a trailing numeric token, and only when the value column is
     // otherwise empty.
@@ -776,6 +781,7 @@ List<DocumentResult> _parseResultsTable(List<OcrLine> lines) {
       if (recovered != null) {
         label = recovered.label;
         value = recovered.value;
+        labFlag = null; // recovered token has no mark
       }
     }
     // The patient block has the same two-column shape, so it parses cleanly.
@@ -804,6 +810,7 @@ List<DocumentResult> _parseResultsTable(List<OcrLine> lines) {
         value,
         unit: unit,
         range: (range == null || range.isEmpty) ? null : range,
+        labFlag: labFlag,
       ),
     );
   }
@@ -868,11 +875,6 @@ final _narrativeStartRe = RegExp(
   r'^\s*(?:interpretation(?:\s*&\s*remarks?)?|remarks?|comments?|method|note)\s*:?\s*$',
   caseSensitive: false,
 );
-final _categoricalRangeRe = RegExp(
-  r'\b(?:non[- ]?diabetic|pre[- ]?diabetic|diabetic|good control|poor control|'
-  r'unsatisfactory control)\b',
-  caseSensitive: false,
-);
 final _methodDetailRe = RegExp(
   r'^\s*\(.*(?:chromatograph|immunoassay|method|hplc).*\)\s*$',
   caseSensitive: false,
@@ -908,17 +910,73 @@ List<OcrLine> _tableRegion(List<OcrLine> lines) {
   }
   // Bound on the header/footer centres, so a range printed slightly above its
   // row survives, and skip the header/footer lines themselves by text.
+  // Filter only: _semanticElementLines matches these by text and position, so a
+  // rewritten line loses its word boxes. Folding is in the reader.
   return [
     for (final l in lines)
       if (!_noiseRe.hasMatch(l.text) &&
           !_headerRe.hasMatch(l.text) &&
           !_footerRe.hasMatch(l.text) &&
           !_narrativeStartRe.hasMatch(l.text) &&
-          !_categoricalRangeRe.hasMatch(l.text) &&
           !_methodDetailRe.hasMatch(l.text) &&
           (headerCy == null || l.cy >= headerCy) &&
           (footerCy == null || l.cy < footerCy))
         l,
+  ];
+}
+
+/// Banded interval line ("Pre-diabetic: 5.7-6.4").
+final _bandLineRe = RegExp(
+  r'^\s*[A-Za-z][A-Za-z \-/]{2,24}\s*:\s*'
+  r'(?:[<>]=?|[≤≥])?\s*\d+(?:\.\d+)?'
+  r'(?:\s*(?:[-–—]|to)\s*\d+(?:\.\d+)?)?\s*$',
+  caseSensitive: false,
+);
+
+/// Merge stacked bands into one range cell (by column).
+List<OcrLine> _collapseBandLines(List<OcrLine> lines) {
+  final bands = [
+    for (final l in lines)
+      if (_bandLineRe.hasMatch(_fixNumeric(l.text))) l,
+  ];
+  if (bands.length < 2) return lines;
+
+  final heights = [for (final l in lines) l.bottom - l.top]..sort();
+  final lineHeight = heights.isEmpty ? 14.0 : heights[heights.length ~/ 2];
+  bands.sort((a, b) => a.top.compareTo(b.top));
+
+  final runs = <List<OcrLine>>[];
+  for (final band in bands) {
+    final open = runs.isEmpty ? null : runs.last;
+    // Same column, next line down.
+    if (open != null &&
+        (band.left - open.last.left).abs() <= lineHeight * 2 &&
+        band.top - open.last.top <= lineHeight * 2.5) {
+      open.add(band);
+    } else {
+      runs.add([band]);
+    }
+  }
+
+  // Identity map; OcrLine has no ==.
+  final folded = <OcrLine, OcrLine>{};
+  final absorbed = <OcrLine>{};
+  for (final run in runs) {
+    if (run.length < 2) continue; // lone band already one cell
+    folded[run.first] = OcrLine(
+      run.map((l) => l.text.trim()).join('; '),
+      run.map((l) => l.left).reduce((a, b) => a < b ? a : b),
+      run.first.top,
+      run.map((l) => l.right).reduce((a, b) => a > b ? a : b),
+      run.first.bottom,
+      confidence: run.first.confidence,
+    );
+    absorbed.addAll(run.skip(1));
+  }
+  if (folded.isEmpty) return lines;
+  return [
+    for (final l in lines)
+      if (!absorbed.contains(l)) folded[l] ?? l,
   ];
 }
 
@@ -1259,8 +1317,9 @@ String _applyStandardUnit(String label, String range) {
 
 enum _Kind { label, value, range, ignore }
 
+// Include <= / >= as ranges.
 final _rangeRe = RegExp(
-  r'[<>≤≥]\s*\d|\d+(?:\.\d+)?\s*(?:[-–—]|to)\s*\d+(?:\.\d+)?',
+  r'[<>≤≥]=?\s*\d|\d+(?:\.\d+)?\s*(?:[-–—]|to)\s*\d+(?:\.\d+)?',
 );
 // A lone measurement, tolerating a trailing abnormal-flag (*, #, ↑, ↓).
 final _valueRe = RegExp(r'^\d[\d,]*(?:\.\d+)?\s*[*#↑↓]?\s*[a-zA-Z%/µ]*$');
@@ -1268,6 +1327,10 @@ final _valueRe = RegExp(r'^\d[\d,]*(?:\.\d+)?\s*[*#↑↓]?\s*[a-zA-Z%/µ]*$');
 /// Strips a trailing abnormal-flag marker from a value (e.g. "0.86 *" → "0.86").
 String _stripFlags(String s) =>
     s.replaceAll(RegExp(r'\s*[*#↑↓]\s*$'), '').trim();
+
+/// Flag stripped by [_stripFlags].
+String? _labFlag(String s) =>
+    RegExp(r'[*#↑↓]\s*$').firstMatch(s)?.group(0)?.trim();
 
 /// A line whose whole text is just a unit (the 4th column on some reports).
 bool _isUnitLine(String text) {
@@ -1620,7 +1683,8 @@ List<DocumentResult> parseTableCellReconciliation(
       if (invalid) continue;
     }
 
-    final splitValue = _splitValueUnit(_fixUnits(_fixNumeric(value.text)));
+    final fixedValue = _fixUnits(_fixNumeric(value.text));
+    final splitValue = _splitValueUnit(fixedValue);
     final rawRange = ranges.isEmpty
         ? null
         : ranges.map((cell) => _fixNumeric(cell.text.trim())).join(' ');
@@ -1645,6 +1709,7 @@ List<DocumentResult> parseTableCellReconciliation(
         range: splitRange.range?.trim().isEmpty ?? true
             ? null
             : splitRange.range!.trim(),
+        labFlag: _labFlag(fixedValue),
       ),
     ));
   }
@@ -1775,7 +1840,7 @@ String _cleanLabel(String raw) => raw
 // ─────────────────────────────────────────────────────────────────────────────
 
 final _trailingRangeRe = RegExp(
-  r'([<>≤≥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)\s*[a-zA-Z%/µ.]*\s*$',
+  r'([<>≤≥]=?\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)\s*[a-zA-Z%/µ.]*\s*$',
 );
 final _trailingValueRe = RegExp(r'\d[\d,]*(?:\.\d+)?\s*[a-zA-Z%/µ]*$');
 

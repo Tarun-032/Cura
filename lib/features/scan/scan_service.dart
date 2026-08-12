@@ -8,7 +8,6 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../../core/util/range_status.dart';
 import '../ai/remote/pii_redactor.dart' show deleteNameRuns;
 import '../ai/retrieval.dart' show kMonthNames;
 import '../library/document.dart';
@@ -900,21 +899,8 @@ class ScanService {
           ? 'Total ${total.value}'
           : 'Total ${total.value} · $count';
     }
-    final flagged = <String>[];
-    var anyRange = false;
-    for (final r in results) {
-      final s = rangeStatus(r.value, r.range);
-      if (s != null) anyRange = true;
-      if (s == 'above' || s == 'below') flagged.add(r.label);
-    }
-    final n = results.length;
-    final count = '$n result${n == 1 ? '' : 's'}';
-    if (!anyRange) return count;
-    if (flagged.isEmpty) return '$count · all within the normal range';
-    final names = flagged.length <= 3
-        ? flagged.join(', ')
-        : '${flagged.take(3).join(', ')} +${flagged.length - 3} more';
-    return '$count · ${flagged.length} outside the normal range: $names';
+    // Labs: live summary at draw time, not stored.
+    return null;
   }
 
   /// Extract narrative summary text.

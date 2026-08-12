@@ -331,6 +331,7 @@ class _ReviewDocumentScreenState extends ConsumerState<ReviewDocumentScreen> {
           range: _type == DocumentType.prescription || r.range.isEmpty
               ? null
               : r.range,
+          labFlag: r.labFlag,
         ),
   ];
 
@@ -1135,13 +1136,22 @@ class _RescanPill extends StatelessWidget {
 
 /// Holds the three editable fields for one results row.
 class _ResultRow {
-  _ResultRow(this.labelCtrl, this.valueCtrl, this.unitCtrl, this.rangeCtrl);
+  _ResultRow(
+    this.labelCtrl,
+    this.valueCtrl,
+    this.unitCtrl,
+    this.rangeCtrl, {
+    this.seedFlag,
+    this.seedValue = '',
+  });
 
   factory _ResultRow.from(DocumentResult r) => _ResultRow(
     TextEditingController(text: r.label),
     TextEditingController(text: r.value),
     TextEditingController(text: r.unit ?? ''),
     TextEditingController(text: r.range ?? ''),
+    seedFlag: r.labFlag,
+    seedValue: r.value.trim(),
   );
 
   /// A prescription may have a dose unit in the lab-shaped unit slot, so fold it
@@ -1164,6 +1174,13 @@ class _ResultRow {
   final TextEditingController valueCtrl;
   final TextEditingController unitCtrl;
   final TextEditingController rangeCtrl;
+
+  /// Lab mark tied to [seedValue].
+  final String? seedFlag;
+  final String seedValue;
+
+  /// Cleared once the value is edited.
+  String? get labFlag => value == seedValue ? seedFlag : null;
 
   String get label => labelCtrl.text.trim();
   String get value => valueCtrl.text.trim();

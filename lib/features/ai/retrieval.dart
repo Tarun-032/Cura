@@ -1,4 +1,5 @@
 import '../library/document.dart';
+import '../library/result_range.dart';
 import 'remote/pii_redactor.dart' show keepMedicalLines;
 
 /// Local keyword retrieval.
@@ -314,7 +315,10 @@ String _docBlock(CuraDocument d, int index, {bool includeRawText = true}) {
     final parts = d.results
         .map((r) {
           final range = r.range != null ? ' (${r.range})' : '';
-          return '${r.label}: ${r.valueWithUnit}$range';
+          // Pass precomputed verdict; don't let the model compare.
+          final note = verdictNote(r);
+          return '${r.label}: ${r.valueWithUnit}$range'
+              '${note == null ? '' : ' [$note]'}';
         })
         .join('; ');
     b.writeln('Results: $parts');

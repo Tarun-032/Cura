@@ -67,12 +67,21 @@ extension DocumentTypeDisplay on DocumentType {
 /// A single label→value row inside a document's Results card, with an optional
 /// reference range (e.g. "13–17 gm%") shown faintly beneath the value.
 class DocumentResult {
-  const DocumentResult(this.label, this.value, {this.unit, this.range});
+  const DocumentResult(
+    this.label,
+    this.value, {
+    this.unit,
+    this.range,
+    this.labFlag,
+  });
 
   final String label;
   final String value;
   final String? unit;
   final String? range;
+
+  /// Lab mark (*, #, ↑, ↓) for range cross-check.
+  final String? labFlag;
 
   bool get needsReview => value.trim().isEmpty;
 

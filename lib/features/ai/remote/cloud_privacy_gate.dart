@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../library/document.dart';
+import '../../library/result_range.dart';
 import 'clinical_vocabulary.dart';
 import 'pii_redactor.dart';
 
@@ -386,11 +387,17 @@ class CloudPrivacyGate {
     final row = '$label: $measured${range.isEmpty ? '' : ' ($range)'}';
     // Keep age and sex rows by design.
     if (isKeptDemographicRowLabel(result.label)) {
-      return containsHardCloudRisk(measured) ? '' : row;
+      return containsHardCloudRisk(measured) ? '' : _withVerdict(row, result);
     }
     // Re-check the assembled row.
     final safe = _safeField(row, identity);
-    return safe == row ? row : '';
+    return safe == row ? _withVerdict(row, result) : '';
+  }
+
+  /// Add our verdict after redaction passes.
+  String _withVerdict(String row, DocumentResult result) {
+    final note = verdictNote(result);
+    return note == null ? row : '$row [$note]';
   }
 
   String _safeField(String source, [Set<String> identity = const {}]) {
