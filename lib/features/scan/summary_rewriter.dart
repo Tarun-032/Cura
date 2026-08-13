@@ -39,26 +39,26 @@ String? acceptSummaryRewrite(String source, String? output) {
   if (out.isEmpty) return null;
   if (looksLikeModelRefusal(out)) return null;
   if (out.length > source.length * 1.5 + 200) return null;
-  // Trim cut-off tails.
-  if (!_sentenceEnders.contains(out[out.length - 1])) {
-    final cut = _lastSentenceEnd(out);
-    if (cut < 0) return null;
-    out = out.substring(0, cut + 1);
-  }
+  final trimmed = trimToLastSentence(out);
+  if (trimmed == null) return null;
+  out = trimmed;
   // Reject near-empty output.
   if (out.length < 60) return null;
   if (!numbersGrounded(source, out)) return null;
   return out;
 }
 
-const _sentenceEnders = '.!?…';
-
-int _lastSentenceEnd(String text) {
+/// Trim to last sentence end; null if none.
+String? trimToLastSentence(String text) {
+  if (text.isEmpty) return null;
+  if (_sentenceEnders.contains(text[text.length - 1])) return text;
   for (var i = text.length - 1; i >= 0; i--) {
-    if (_sentenceEnders.contains(text[i])) return i;
+    if (_sentenceEnders.contains(text[i])) return text.substring(0, i + 1);
   }
-  return -1;
+  return null;
 }
+
+const _sentenceEnders = '.!?…';
 
 /// One model call.
 typedef SummaryRewriteRequest =

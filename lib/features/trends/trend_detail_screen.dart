@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/app_colors.dart';
 import '../../core/data/providers.dart';
+import '../../core/widgets/working_label.dart';
 import '../library/document.dart';
 import '../library/result_range.dart';
 import 'trend_card.dart';
+import 'trend_note.dart';
 import 'trend_series.dart';
 
 /// Chart + source reports. Rebuilds from live docs via [seriesKey].
@@ -96,6 +98,7 @@ class _Readings extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
       children: [
         TrendCard(series: series),
+        _TrendNote(series: series),
         const SizedBox(height: 22),
         Text('Where these came from', style: textTheme.bodySmall),
         const SizedBox(height: 12),
@@ -110,6 +113,46 @@ class _Readings extends StatelessWidget {
             },
           ),
         ],
+      ],
+    );
+  }
+}
+
+/// Chart note block; hidden until ready.
+class _TrendNote extends ConsumerWidget {
+  const _TrendNote({required this.series});
+
+  final TrendSeries series;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final textTheme = Theme.of(context).textTheme;
+    final facts = trendFacts(series);
+    final note = ref.watch(trendNoteProvider((key: series.key, facts: facts)));
+
+    final line = textTheme.bodyMedium?.copyWith(
+      fontSize: kTrendRowTextSize,
+      height: 1.5,
+    );
+
+    final body = note.when(
+      loading: () => const WorkingLabel(text: 'Reading the trend…'),
+      // Provider refusal reason.
+      error: (e, _) => e is TrendNoteFailure
+          ? Text(e.message, style: line?.copyWith(color: AppColors.secondary))
+          : null,
+      data: (text) => text == null ? null : Text(text, style: line),
+    );
+    if (body == null) return const SizedBox.shrink();
+
+    // Match reports section spacing.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 22),
+        Text('Summary', style: textTheme.bodySmall),
+        const SizedBox(height: 12),
+        body,
       ],
     );
   }
@@ -162,8 +205,10 @@ class _ReadingRow extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      ['${point.dateLabel}, ${point.date.year}', ?verdict]
-                          .join(' · '),
+                      [
+                        '${point.dateLabel}, ${point.date.year}',
+                        ?verdict,
+                      ].join(' · '),
                       style: textTheme.bodySmall?.copyWith(
                         fontSize: 12.5,
                         color: AppColors.secondary,

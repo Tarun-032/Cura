@@ -48,9 +48,12 @@ enum ScanExtractionMode { metadata, receipt, tableRepair, labRows }
 
 /// A summary rewrite result.
 class SummaryRewrite {
-  const SummaryRewrite(this.text, {this.preempted = false});
+  const SummaryRewrite(this.text, {this.preempted = false, this.error});
   final String? text;
   final bool preempted;
+
+  /// Provider refusal reason; null if answered.
+  final String? error;
 }
 
 /// Cancel a stream.
@@ -327,8 +330,7 @@ class AiService {
     return bestScore >= 2 ? best : null;
   }
 
-  /// Cards for a cloud answer: an exact [cardSources] set when there is one,
-  /// else the reports the answer names.
+  /// Cloud answer cards: exact set or inferred from answer.
   @visibleForTesting
   static ({List<CuraDocument> cards, int total, CuraDocument? cited})
   cloudAnswerCards(
@@ -357,7 +359,7 @@ class AiService {
     );
   }
 
-  /// Collection prompt details for cloud model.
+  /// Cloud collection-prompt details.
   @visibleForTesting
   static ({String? verifiedCount, String? listNote, bool topical})
   collectionPrompt(RoutedAnswer? route) {
@@ -417,8 +419,7 @@ class AiService {
       }
     }
 
-    // One route per cloud turn: a verified count, the exact card set, and the
-    // report to cite.
+    // One cloud route: count, cards, citation.
     final cloudRoute = useRemote ? routeQuestion(q, docs) : null;
     final collection = collectionPrompt(cloudRoute);
     final verifiedCount = collection.verifiedCount;
@@ -481,9 +482,7 @@ class AiService {
     final cloudIdentityTerms = useRemote
         ? privacyGate.identityTermsForDocuments(docs)
         : const <String>{};
-    // A topical question is judged across the whole inventory, so the keyword
-    // pick must not be shown as "the relevant reports" — that reads as the
-    // answer and stops the model looking any further.
+    // Don't present keyword pick as the answer for topical asks.
     final detailedContext = contextDocs.isEmpty || collection.topical
         ? ''
         : (useRemote
@@ -528,7 +527,7 @@ class AiService {
         : !useRemote && g.otherReports.isNotEmpty
         ? '$enginePrompt${_otherReportsNote(g.otherReports)}'
         : enginePrompt;
-    // Appended, not folded in above, so the local KV cache keys off basePrompt.
+    // Append after basePrompt so KV cache keys stay stable.
     final systemPrompt = collection.listNote == null
         ? basePrompt
         : '$basePrompt${collection.listNote}';
@@ -544,7 +543,7 @@ class AiService {
       maxTurns: wantsRecall ? 12 : 4,
     );
 
-    // Cloud engine → stream over HTTP, no local model needed.
+    // Cloud → HTTP stream.
     if (useRemote) {
       final safePriorTurns = <({String role, String text})>[];
       for (final turn in priorTurns) {
@@ -568,8 +567,7 @@ class AiService {
       // Collection routes carry their local set.
       final routeCardsAreAuthoritative =
           isCollectionRoute && cloudRoute!.sourcesAreAuthoritative;
-      // Attach every matching source, unless the keyword pick is only a guess at
-      // a topic — then the cards follow whatever the answer names.
+      // Exact sources, or infer cards from the answer.
       final groundedCollectionSources =
           !collection.topical &&
               (g.kind == GroundingKind.collection ||
@@ -582,12 +580,12 @@ class AiService {
       final cardTotal = routeCardsAreAuthoritative
           ? cloudRoute.sourceTotal
           : groundedCollectionSources.length;
-      // No exact set, so infer the cards from the answer.
+      // Infer cards from the answer.
       final cardCandidates = cardSources.isEmpty
           ? docs
           : const <CuraDocument>[];
       yield* _answerRemote(
-        // The route's pick is the fallback citation.
+        // Route pick as fallback citation.
         source ?? cloudRoute?.source,
         resolveCandidates,
         systemPrompt,
@@ -631,15 +629,14 @@ class AiService {
         return;
       }
 
-      // ChatML fast path: attempt KV reuse, else rebuild.
-      // Reuse shapes: follow-up, warm base, rebuild.
+      // ChatML: KV reuse or rebuild.
       final user = (role: 'user', text: userContent);
       final sameSystem = _kvSystem == systemContent;
       String? feed;
       var reuse = false;
 
       if (sameSystem && conversationId != null && _kvConvId == conversationId) {
-        // Follow-up in the same chat: only the new turn needs prefilling.
+        // Same-chat follow-up: prefill new turn only.
         final s = chatmlUserTurn(userContent, closePrev: _kvOpenAnswer);
         if (_kvTokensEst + _estTokens(s) + _kAnswerHeadroom <=
             _spec!.contextSize) {
@@ -647,8 +644,7 @@ class AiService {
           reuse = true;
         }
       } else if (sameSystem && _kvConvId == null && !_kvOpenAnswer) {
-        // Only the system prompt is cached and cleanly closed: append any prior
-        // turns plus the new user turn onto it.
+        // Append history + user onto cached system prompt.
         final s = chatmlFull([...priorTurns, user]);
         if (_kvTokensEst + _estTokens(s) + _kAnswerHeadroom <=
             _spec!.contextSize) {
@@ -658,7 +654,7 @@ class AiService {
         }
       }
       if (feed == null) {
-        // Rebuild: clear and prefill the whole prompt (system + history + user).
+        // Rebuild full prompt.
         await _clearKv();
         feed = chatmlFull([
           (role: 'system', text: systemContent),
@@ -669,11 +665,10 @@ class AiService {
         _kvConvId = conversationId;
       }
 
-      // Insert closed think block to prevent model reasoning.
+      // Closed think block → no reasoning.
       if (noThink) feed = '$feed$_kNoThinkPrefill';
 
-      // Budget against the *total* cache after this turn, so prompt + answer never
-      // overflow the window and evict the system prompt.
+      // Budget total cache so system prompt isn't evicted.
       final promptTokensEst = _kvTokensEst + _estTokens(feed);
       final ceiling = routed?.rewriteMaxTokens ?? _spec!.maxOutputTokens;
       final headroom = _spec!.contextSize - promptTokensEst - 48;
@@ -709,7 +704,7 @@ class AiService {
         cancellation?.detach();
       }
 
-      // Record open answer in KV cache for reuse; clear if stopped.
+      // Cache open answer; clear if stopped.
       if (cancellation?.cancelled ?? false) {
         await _clearKv();
       } else {
@@ -732,8 +727,7 @@ class AiService {
           'promptChars=${userContent.length} maxTok=$maxTokens valid=$valid',
         );
         if (!valid) {
-          // The cache holds the rejected wording but history persists the
-          // fallback, so clear it and rebuild from what the user saw.
+          // Cache has rejected text; rebuild from shown history.
           await _clearKv();
           yield AskChunk(
             routed.text,
@@ -753,12 +747,12 @@ class AiService {
         }
         return;
       }
-      // If answer empty, show thinking text instead.
+      // Empty answer → show think text.
       yield _finalLocalChunk(parsed, source, candidates: resolveCandidates);
     } catch (_) {
-      // Cache state is now uncertain — invalidate so the next question rebuilds.
+      // Invalidate uncertain cache.
       await _clearKv();
-      // A stop is not a failure: the caller keeps what it already streamed.
+      // Stop ≠ failure; keep streamed text.
       if (cancellation?.cancelled ?? false) return;
       if (routed != null) {
         yield AskChunk(
@@ -777,9 +771,7 @@ class AiService {
     }
   }
 
-  /// Fallback on-device generation: the full-rebuild path via generateChat, used
-  /// when KV reuse doesn't apply — a reasoning model in "Think harder" mode, or
-  /// any non-chatml model. Clears the cache first; no incremental reuse.
+  /// Full-rebuild on-device path when KV reuse doesn't apply.
   Stream<AskChunk> _answerLocalFresh(
     String systemContent,
     List<({String role, String text})> priorTurns,
@@ -797,7 +789,7 @@ class AiService {
       for (final t in priorTurns) ChatMessage(role: t.role, content: t.text),
       ChatMessage(role: 'user', content: userContent),
     ];
-    // Clear via _clearKv so the reuse tracker knows the cache was reset.
+    // Clear via _clearKv for reuse tracker.
     await _clearKv();
 
     final ceiling = routed != null
@@ -864,8 +856,7 @@ class AiService {
       );
       return;
     }
-    // Salvage a blank answer unless the user asked to think (then the think panel
-    // is intentional and an empty answer would be surfaced separately).
+    // Salvage blank answer unless Think harder.
     yield _finalLocalChunk(
       parsed,
       source,
@@ -874,17 +865,14 @@ class AiService {
     );
   }
 
-  /// Builds the final on-device chunk, showing `<think>` content as the answer
-  /// when the answer itself came back empty. [salvage] is false in "Think harder"
-  /// mode, where the separate think panel is intentional.
+  /// Final chunk; salvage think text if answer empty.
   AskChunk _finalLocalChunk(
     _ParsedAnswer p,
     CuraDocument? source, {
     bool salvage = true,
     List<CuraDocument> candidates = const [],
   }) {
-    // When the model resolved among several attached reports, infer which one it
-    // explained so the answer still shows a source card.
+    // Infer cited report among attached sources.
     final cited = source ?? _sourceFromAnswer(p.answer, candidates);
     if (salvage && p.answer.isEmpty && p.thinking.isNotEmpty) {
       return AskChunk(p.thinking, source: cited, done: true);
@@ -892,10 +880,7 @@ class AiService {
     return AskChunk(p.answer, thinking: p.thinking, source: cited, done: true);
   }
 
-  /// Streams an Ask answer from the cloud engine. Same prompt shape as the local
-  /// path (system + bounded history + user turn); only the token source differs.
-  /// A [RemoteAiException] carries a user-ready reason (bad key, offline, …),
-  /// which is surfaced instead of the generic failure line.
+  /// Stream Ask from cloud; surface [RemoteAiException] reasons.
   Stream<AskChunk> _answerRemote(
     CuraDocument? source,
     List<CuraDocument> resolveCandidates,
@@ -934,7 +919,7 @@ class AiService {
     final buf = StringBuffer();
     var tokens = 0;
     var ttftMs = -1;
-    // Closing the client tears down the SSE response mid-flight.
+    // Close client → tear down SSE.
     cancellation?.attach(backend.close);
     try {
       await for (final tok in untilCancelled(
@@ -965,7 +950,7 @@ class AiService {
         if (cancellation?.cancelled ?? false) break;
       }
     } on RemoteAiException catch (e) {
-      // A stop closes the client, which lands here as a broken read.
+      // Stop closes client → broken read here.
       if (!(cancellation?.cancelled ?? false)) {
         yield AskChunk(e.message, done: true);
         return;
@@ -997,7 +982,7 @@ class AiService {
         knownIdentityTerms: knownIdentityTerms,
       ),
     );
-    // safeTitle is the spelling the inventory gave the model.
+    // safeTitle = inventory spelling.
     final picked = cloudAnswerCards(
       p.answer,
       cardSources: cardSources,
@@ -1023,8 +1008,7 @@ class AiService {
     );
   }
 
-  // Scan refinement uses small purpose-specific contracts, so the model is never
-  // asked for summaries the review screen discards.
+  // Purpose-specific scan contracts only.
   static const _metadataExtractionPrompt =
       'Read the minimized OCR and return ONLY one JSON object with any grounded '
       'metadata you can find: {"title":string,"type":"lab"|"receipt"|'
@@ -1058,7 +1042,7 @@ class AiService {
       'row order, and keep every cell for one row within the same OCR pass. Do '
       'not return a note, summary, result values, patient details, or prose.';
 
-  // Read rather than repair: no cell IDs exist to map onto.
+  // Read path (no cell IDs for repair).
   static const _labRowsExtractionPrompt =
       'Read the minimized lab OCR and return ONLY one JSON object with optional '
       'grounded metadata {"title":string,"type":"lab","date":string} and '
@@ -1100,8 +1084,7 @@ class AiService {
       'finish the sentence you are writing. No heading, preamble, closing, or '
       'bullet list. Return only the summary.';
 
-  /// Rewrites a scraped section dump as plain prose, on whichever engine is
-  /// active. Raw model output: [SummaryRewriter] validates it before it is kept.
+  /// Rewrite scraped summary; [SummaryRewriter] validates.
   Future<SummaryRewrite> rewriteSummary(
     String summary, {
     required DocumentType type,
@@ -1113,6 +1096,28 @@ class AiService {
     if (!useRemote && await _manager.installedModel() == null) {
       return const SummaryRewrite(null);
     }
+    return _runBackground(
+      label: 'rewrite',
+      sourceChars: source.length,
+      useRemote: useRemote,
+      run: (cancellation) => useRemote
+          ? _rewriteRemote(
+              source,
+              type: type,
+              title: title,
+              cancellation: cancellation,
+            )
+          : _rewriteLocal(source, cancellation: cancellation),
+    );
+  }
+
+  /// Preemptible background gen; Ask cancels via [_preemptBackground].
+  Future<SummaryRewrite> _runBackground({
+    required String label,
+    required int sourceChars,
+    required bool useRemote,
+    required Future<String> Function(GenerationCancellation) run,
+  }) async {
     await _preemptBackground();
     final cancellation = GenerationCancellation();
     final done = Completer<void>();
@@ -1120,28 +1125,27 @@ class AiService {
     _backgroundDone = done.future;
     try {
       final sw = Stopwatch()..start();
-      final out = useRemote
-          ? await _rewriteRemote(
-              source,
-              type: type,
-              title: title,
-              cancellation: cancellation,
-            )
-          : await _rewriteLocal(source, cancellation: cancellation);
+      final out = await run(cancellation);
       debugPrint(
-        '[Cura.ai] rewrite engine=${useRemote ? 'remote' : 'local'} '
-        'ms=${sw.elapsedMilliseconds} sourceChars=${source.length} '
+        '[Cura.ai] $label engine=${useRemote ? 'remote' : 'local'} '
+        'ms=${sw.elapsedMilliseconds} sourceChars=$sourceChars '
         'outputChars=${out.length} preempted=${cancellation.cancelled}',
       );
       if (cancellation.cancelled) {
         return const SummaryRewrite(null, preempted: true);
       }
       return SummaryRewrite(out);
+    } on RemoteAiException catch (e) {
+      // Surface provider refusal message.
+      debugPrint('[Cura.ai] $label failed: ${e.message}');
+      return SummaryRewrite(
+        null,
+        preempted: cancellation.cancelled,
+        error: e.message,
+      );
     } catch (_) {
       return SummaryRewrite(null, preempted: cancellation.cancelled);
     } finally {
-      // Released only here, once the backend has stopped and the cache is
-      // settled, so whoever preempted this is safe to start.
       if (identical(_background, cancellation)) _background = null;
       if (identical(_backgroundDone, done.future)) _backgroundDone = null;
       done.complete();
@@ -1151,20 +1155,19 @@ class AiService {
   Future<String> _rewriteLocal(
     String source, {
     required GenerationCancellation cancellation,
+    String prompt = _summaryRewritePrompt,
+    String userPrefix = 'Summary',
+    int ceiling = _kRewriteMaxTokens,
   }) async {
     await _ensureLoaded();
     if (cancellation.cancelled) return '';
-    // Clear via _clearKv so the Ask reuse tracker knows this wiped the cache.
+    // Clear via _clearKv for Ask reuse tracker.
     await _clearKv();
     cancellation.attach(_stopLocal);
-    final system = _spec!.canThink
-        ? '$_summaryRewritePrompt /no_think'
-        : _summaryRewritePrompt;
+    final system = _spec!.canThink ? '$prompt /no_think' : prompt;
     final promptChars = system.length + source.length + 24;
     final headroom = _spec!.contextSize - (promptChars / 3.5).ceil() - 48;
-    final ceiling = _spec!.maxOutputTokens < _kRewriteMaxTokens
-        ? _spec!.maxOutputTokens
-        : _kRewriteMaxTokens;
+    if (_spec!.maxOutputTokens < ceiling) ceiling = _spec!.maxOutputTokens;
     final maxTokens = headroom < ceiling
         ? (headroom < 96 ? 96 : headroom)
         : ceiling;
@@ -1175,7 +1178,7 @@ class AiService {
         _ctrl!.generateChat(
           messages: [
             ChatMessage(role: 'system', content: system),
-            ChatMessage(role: 'user', content: 'Summary:\n$source'),
+            ChatMessage(role: 'user', content: '$userPrefix:\n$source'),
           ],
           template: _spec!.template,
           temperature: 0.2,
@@ -1190,8 +1193,7 @@ class AiService {
       }
     } finally {
       cancellation.detach();
-      // Prose is long enough to leave a big open answer in the cache, and the
-      // next Ask turn has nothing to stitch it to.
+      // Clear cache after long prose (no Ask stitch).
       await _clearKv();
     }
     return _split(buf.toString()).answer;
@@ -1203,7 +1205,7 @@ class AiService {
     required String? title,
     required GenerationCancellation cancellation,
   }) async {
-    // Apply cloud minimization; fail closed if empty.
+    // Cloud minimize; fail closed if empty.
     final safe = const CloudPrivacyGate()
         .scanText(source, title: title, type: type)
         .text;
@@ -1240,13 +1242,109 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
-  /// On-device rewrite ceiling: 5 to 8 sentences, no hidden reasoning.
+  /// On-device rewrite: 5–8 sentences, no think.
   static const _kRewriteMaxTokens = 768;
 
-  /// Remote rewrite ceiling: 5 to 8 sentences, with hidden reasoning.
+  /// Remote rewrite: 5–8 sentences, with think.
   static const _kRemoteRewriteMaxTokens = 2048;
 
-  
+  // Trend chart note prompt.
+  static const _trendNotePrompt =
+      'You are writing the short explanation printed under a chart of one lab '
+      'measurement, for the person it belongs to. Write one paragraph of four '
+      'to six plain sentences, covering these in order:\n'
+      '1. What this measure is and what the body uses it for.\n'
+      '2. Every reading, oldest first, each with its date and its value.\n'
+      '3. Which way the readings have moved: steady, rising, falling, or up '
+      'and down, and whether each move was sharp or slight.\n'
+      '4. What that adds up to: how many readings sit inside the normal '
+      'range and how many are outside it, and whether the most recent '
+      'reading is closer to that range than the one before it.\n'
+      'Use only the numbers given and never work out a new one: no averages, '
+      'differences or percentages. Say each value with the unit printed '
+      'beside it, and if two reports print different units, keep each value '
+      'exactly as printed and never convert between them. Do not name a '
+      'cause, diagnose anything, say what to do next, or tell the person not '
+      'to worry. Write flowing prose: no heading, no preamble, no closing, '
+      'no bullets or numbering. Always finish the sentence you are writing. '
+      'Return only the paragraph.';
+
+  /// Stable engine tag (provider + model id; no key).
+  Future<String> engineTag() async {
+    if (await _remote.remoteActive()) {
+      final cfg = await _remote.config();
+      return 'remote:${cfg.providerId}/${cfg.modelId.trim()}';
+    }
+    return 'local:${(await _manager.installedModel())?.id ?? 'none'}';
+  }
+
+  /// Explain one chart; `TrendNarrator` validates.
+  Future<SummaryRewrite> explainTrend(String facts) async {
+    final source = facts.trim();
+    if (source.isEmpty) return const SummaryRewrite(null);
+    final useRemote = await _remote.remoteActive();
+    if (!useRemote && await _manager.installedModel() == null) {
+      return const SummaryRewrite(null);
+    }
+    return _runBackground(
+      label: 'trend note',
+      sourceChars: source.length,
+      useRemote: useRemote,
+      run: (cancellation) => useRemote
+          ? _trendRemote(source, cancellation: cancellation)
+          : _rewriteLocal(
+              source,
+              cancellation: cancellation,
+              prompt: _trendNotePrompt,
+              userPrefix: 'Readings',
+              ceiling: _kTrendNoteMaxTokens,
+            ),
+    );
+  }
+
+  /// Synthetic facts → message scrub only.
+  Future<String> _trendRemote(
+    String source, {
+    required GenerationCancellation cancellation,
+  }) async {
+    final safe = const CloudPrivacyGate().documentMessage('Readings:\n$source');
+    // Fail closed if scrub emptied payload.
+    if (safe.content.trim().isEmpty) return '';
+    final backend = _remoteBackendFactory(await _remote.config());
+    cancellation.attach(backend.close);
+    if (cancellation.cancelled) return '';
+    final buf = StringBuffer();
+    try {
+      await for (final tok in untilCancelled(
+        backend.generate(
+          messages: [
+            CloudSafeMessage.developerLiteral(
+              role: 'system',
+              content: _trendNotePrompt,
+            ),
+            safe,
+          ],
+          temperature: 0.2,
+          maxTokens: _kRemoteTrendNoteMaxTokens,
+        ),
+        cancellation,
+      )) {
+        if (cancellation.cancelled) break;
+        buf.write(tok);
+      }
+    } finally {
+      cancellation.detach();
+      backend.close();
+    }
+    return _split(buf.toString()).answer;
+  }
+
+  /// On-device note: 4–6 sentences, no think.
+  static const _kTrendNoteMaxTokens = 640;
+
+  /// Remote note: 4–6 sentences (room for think).
+  static const _kRemoteTrendNoteMaxTokens = 4096;
+
   ScanRefinementJob? startDocumentRefinement(
     String ocrText, {
     required DocumentType draftType,
@@ -1293,16 +1391,15 @@ class AiService {
         draftType == DocumentType.visit) {
       return const {};
     }
-    // Bills already have deterministic type/date and geometry-derived amounts, so
-    // the model fills only the two semantic fields Review shows.
+    // Bills: model fills only Review's semantic fields.
     if (draftType == DocumentType.receipt) {
       return const {ScanRefinementField.title, ScanRefinementField.receiptNote};
     }
-    // Geometry can never reach these rows, so it is worth either engine.
+    // Geometry-missed rows → either engine.
     final underCovered =
         draftType == DocumentType.lab &&
         labRowsUnderCovered(rows: deterministicResults, ocrText: ocrText);
-    // Metadata stays cloud-only; a small local model rarely improves it.
+    // Metadata: cloud-only.
     if (!useRemote) {
       return underCovered ? const {ScanRefinementField.results} : const {};
     }
@@ -1329,31 +1426,27 @@ class AiService {
   }) async {
     final text = ocrText.trim();
     if (text.isEmpty) return null;
-    // A scan outranks a background rewrite, and must not start until that one
-    // has released the model.
+    // Wait for background rewrite; scan outranks it.
     await _preemptBackground();
     if (!useRemote && await _manager.installedModel() == null) return null;
     if (cancellation.cancelled) return null;
     try {
       final sw = Stopwatch()..start();
-      // Extract JSON from engine; validate against full OCR.
+      // Extract JSON; validate vs OCR.
       final wantsRepair =
           useRemote &&
           fields.contains(ScanRefinementField.results) &&
           tableEvidence.canReconcile &&
           tableEvidence.requiresReconciliation;
       final gate = const CloudPrivacyGate();
-      // Bills route through the bill allowlist (money/billing lines only);
-      // everything else keeps the medical-line policy.
+      // Bills → bill allowlist; else medical lines.
       final cloudOcr = gate.scanText(text, title: title, type: draftType).text;
       final safeEvidence = wantsRepair
           ? gate.tableText('${title ?? ''}\n${tableEvidence.gridText}').text
           : '';
-      // Fail closed when minimization strips the whole candidate row: extract
-      // metadata only and leave the row for review. Receipt breakdowns stay
-      // geometry-only on both engines.
+      // Empty scrub → metadata only; receipts stay geometry-only.
       final repairRequested = wantsRepair && safeEvidence.isNotEmpty;
-      // Cell-ID repair is stricter, so it keeps priority.
+      // Prefer cell-ID repair.
       final rowsRequested =
           !repairRequested &&
           draftType == DocumentType.lab &&
@@ -1365,14 +1458,13 @@ class AiService {
           : draftType == DocumentType.receipt
           ? ScanExtractionMode.receipt
           : ScanExtractionMode.metadata;
-      // Repair requests are table-only, never another upload of the narrative.
-      // A safe title rides along so metadata refinement stays useful.
+      // Repair: table-only + safe title.
       final remoteInput = repairRequested
           ? 'TABLE ROW EVIDENCE:\n$safeEvidence'
           : rowsRequested
           ? selectScanOcrForExtraction(cloudOcr, type: draftType)
           : cloudOcr;
-      // Unredacted (nothing leaves the phone) but bounded.
+      // On-device: unredacted but bounded.
       final localInput = rowsRequested
           ? selectScanOcrForExtraction(text, type: draftType)
           : selectBillOcrForExtraction(text);
@@ -1388,8 +1480,7 @@ class AiService {
               cancellation: cancellation,
             );
       if (cancellation.cancelled) return null;
-      // parseScanExtraction re-checks every value against the OCR, so an invented
-      // number is dropped on either engine.
+      // Drop invented numbers via OCR re-check.
       var ext = parseScanExtraction(
         out,
         text,
@@ -1438,7 +1529,7 @@ class AiService {
     }
   }
 
-  /// On-device scan extraction: JSON out of the warm local model.
+  /// On-device scan JSON extraction.
   Future<String> _extractLocal(
     String selectedOcr, {
     required ScanExtractionMode mode,
@@ -1459,7 +1550,7 @@ class AiService {
       ChatMessage(role: 'system', content: system),
       ChatMessage(role: 'user', content: 'OCR text:\n$selectedOcr\n\nJSON:'),
     ];
-    // Clear via _clearKv so the Ask reuse tracker knows this scan wiped the cache.
+    // Clear via _clearKv after scan.
     await _clearKv();
 
     final promptChars = system.length + selectedOcr.length + 24;
@@ -1498,7 +1589,7 @@ class AiService {
     return _split(buf.toString()).answer;
   }
 
-  /// Cloud scan extraction: JSON out of the configured provider.
+  /// Cloud scan JSON extraction.
   Future<String> _extractRemote(
     String selectedOcr, {
     required ScanExtractionMode mode,
@@ -1543,7 +1634,7 @@ class AiService {
     ScanExtractionMode.tableRepair || ScanExtractionMode.labRows => 4096,
   };
 
-  /// On-device ceiling. 
+  /// On-device ceiling.
   static int _scanMaxTokens(ScanExtractionMode mode) => switch (mode) {
     ScanExtractionMode.metadata || ScanExtractionMode.receipt => 128,
     // A whole table, not a two-field header.
@@ -1576,7 +1667,7 @@ class AiService {
     return kept.reversed.toList();
   }
 
-  /// Splits model output into reasoning/answer using `<think>...</think>`.
+  /// Split `<think>` reasoning from answer.
   _ParsedAnswer _split(String raw) {
     var text = raw
         .replaceAll('\\n', '\n')
@@ -1601,7 +1692,7 @@ class AiService {
       }
     }
 
-    // Strip any stray trailing "SOURCE: …" line the model may append.
+    // Strip trailing "SOURCE: …".
     text = text.replaceAll(
       RegExp(r'\n?\s*SOURCE\s*:.*$', caseSensitive: false, dotAll: true),
       '',
@@ -1615,7 +1706,7 @@ class AiService {
     _spec = spec;
     final path = await _manager.modelPath(spec);
 
-    // Prefer Vulkan GPU layers when recommended.
+    // Prefer Vulkan when recommended.
     var layers = 0;
     final probe = LlamaController();
     try {
@@ -1643,7 +1734,7 @@ class AiService {
       _ctrl = probe;
     } catch (e) {
       if (layers == 0) rethrow;
-      // GPU init can fail on some drivers — retry on the CPU so Ask still works.
+      // GPU fail → CPU fallback.
       debugPrint('[Cura.ai] gpu load failed ($e); falling back to CPU');
       layers = 0;
       final cpu = LlamaController();
@@ -1676,7 +1767,7 @@ class AiService {
     }
   }
 
-  /// Releases the warm model (called when the provider is disposed).
+  /// Release warm model on dispose.
   Future<void> dispose() async {
     await _ctrl?.dispose();
     _ctrl = null;
