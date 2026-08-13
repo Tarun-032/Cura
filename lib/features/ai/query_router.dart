@@ -179,15 +179,13 @@ bool _isPersonal(String q) =>
 // Document type
 // ─────────────────────────────────────────────────────────────────────────────
 
-// detectDocumentType lives in retrieval.dart (imported above) so the router and
-// the LLM grounding path share one detector.
+// Shared with retrieval.dart.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test-value lookup
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Groups of synonyms for the same clinical measure. A document result and a
-/// question "share a test" when both touch the same group.
+/// Synonym groups for the same measure.
 const _aliasGroups = <List<String>>[
   ['hemoglobin', 'haemoglobin', 'hb', 'hgb'],
   ['hba1c', 'a1c', 'glycated'],
@@ -220,6 +218,46 @@ const _aliasGroups = <List<String>>[
   ['chloride'],
   ['calcium'],
   ['esr'],
+  // Red cell indices and the differential.
+  ['hematocrit', 'haematocrit', 'pcv', 'packed cell volume'],
+  ['mcv'],
+  ['mchc'],
+  ['mch'],
+  ['rdw'],
+  ['neutrophil'],
+  ['lymphocyte'],
+  ['eosinophil'],
+  ['monocyte'],
+  ['basophil'],
+  // Rest of the liver panel.
+  ['ggt', 'gamma gt', 'gamma glutamyl'],
+  ['ldh', 'lactate dehydrogenase'],
+  // Iron studies.
+  ['ferritin'],
+  ['tibc', 'total iron binding'],
+  ['iron'],
+  // Thyroid, beyond TSH.
+  ['ft3', 'free t3'],
+  ['ft4', 'free t4'],
+  ['t3', 'triiodothyronine'],
+  ['t4', 'thyroxine'],
+  // Lipids, beyond the three above.
+  ['vldl'],
+  ['non-hdl', 'non hdl'],
+  // Kidney, beyond creatinine.
+  ['egfr', 'gfr'],
+  ['microalbumin'],
+  ['phosphorus', 'phosphate'],
+  ['magnesium'],
+  ['amylase'],
+  ['lipase'],
+  ['crp', 'c reactive protein', 'c-reactive'],
+  ['psa', 'prostate specific'],
+  ['insulin'],
+  ['homocysteine'],
+  ['inr', 'prothrombin'],
+  // Own measure (not haemoglobin).
+  ['hbsag', 'hbs ag', 'hepatitis b surface'],
   ['blood pressure'],
   ['heart rate', 'pulse'],
   ['dose', 'dosage'],
@@ -227,8 +265,7 @@ const _aliasGroups = <List<String>>[
   ['duration'],
 ];
 
-/// Generic words inside a result label that must not, on their own, count as a
-/// match (otherwise "blood" would match every blood-test row).
+/// Label stopwords that alone do not match.
 const _nonSpecific = {
   'blood',
   'cell',
@@ -282,9 +319,7 @@ const _matchStopwords = {
   'from',
 };
 
-/// One (document, result) pair the question refers to, tagged with a canonical
-/// key so that the *same* test across documents groups together, while different
-/// tests stay distinct.
+/// Matched (doc, result) with a canonical test key.
 class _Hit {
   _Hit(this.doc, this.result, this.key);
   final CuraDocument doc;
@@ -292,28 +327,43 @@ class _Hit {
   final String key;
 }
 
-/// Strips periods so dotted acronyms match their plain form ("S.G.P.T" → "sgpt").
-/// The alias groups are stored dotless, so normalizing both sides here lets a
-/// user search "SGPT" and hit a result labelled "S.G.P.T" (and vice-versa).
+/// Drop dots so "S.G.P.T" matches "SGPT".
 String _dedot(String s) => s.replaceAll('.', '');
 
-/// The alias-group index a label belongs to (a trigger is a substring of the
-/// label), or -1.
-int _groupOf(String labelLower) {
-  final label = _dedot(labelLower);
+/// Public alias-group lookup (e.g. Trends).
+int aliasGroupOf(String label) => _groupOf(label.toLowerCase());
+
+/// Stable canonical name for a group.
+String aliasGroupName(int group) => _aliasGroups[group].first;
+
+/// Alias-group index, or -1.
+int _groupOf(String labelLower) => _bestGroup(_dedot(labelLower));
+
+/// Word-boundary alias start; plurals still match.
+bool _mentionsAlias(String dq, String alias) => _aliasAt(dq, alias) >= 0;
+
+/// Alias start index in [dq], or -1.
+int _aliasAt(String dq, String alias) =>
+    RegExp('\\b${RegExp.escape(alias)}').firstMatch(dq)?.start ?? -1;
+
+/// Earliest alias group; longest alias wins ties.
+int _bestGroup(String dedotted) {
+  var best = -1;
+  var bestAt = 1 << 30;
+  var bestLen = 0;
   for (var i = 0; i < _aliasGroups.length; i++) {
     for (final t in _aliasGroups[i]) {
-      if (label.contains(t)) return i;
+      final at = _aliasAt(dedotted, t);
+      if (at < 0) continue;
+      if (at < bestAt || (at == bestAt && t.length > bestLen)) {
+        best = i;
+        bestAt = at;
+        bestLen = t.length;
+      }
     }
   }
-  return -1;
+  return best;
 }
-
-/// An alias counts only when it starts at a word boundary: "last" must not
-/// touch the "ast" alias. The end stays open so plurals keep matching
-/// ("triglycerides" → "triglyceride").
-bool _mentionsAlias(String dq, String alias) =>
-    RegExp('\\b${RegExp.escape(alias)}').hasMatch(dq);
 
 bool _questionTouchesGroup(String q, int group) {
   if (group < 0) return false;
@@ -321,17 +371,13 @@ bool _questionTouchesGroup(String q, int group) {
   return _aliasGroups[group].any((a) => _mentionsAlias(dq, a));
 }
 
-/// The first alias group the question mentions, or null.
+/// Best alias group for the question, or null.
 int? _firstTouchedGroup(String q) {
-  final dq = _dedot(q);
-  for (var i = 0; i < _aliasGroups.length; i++) {
-    if (_aliasGroups[i].any((a) => _mentionsAlias(dq, a))) return i;
-  }
-  return null;
+  final group = _bestGroup(_dedot(q));
+  return group < 0 ? null : group;
 }
 
-/// How to name a test back to the user: the longest alias they actually typed
-/// (echoing their wording), upper-cased if it's a short acronym.
+/// Echo the user's longest typed alias.
 String _displayTestFor(int group, String q) {
   final present =
       _aliasGroups[group].where((a) => _mentionsAlias(q, a)).toList()
@@ -356,7 +402,7 @@ List<_Hit> _referencedResults(String q, List<CuraDocument> docs) {
         key = 'g$group';
       } else {
         key = label;
-        // Direct, specific token of the label appearing as a whole word in q.
+        // Whole-word label token in q.
         for (final tok in label.split(RegExp(r'[^a-z0-9]+'))) {
           if (tok.length < 4 ||
               _matchStopwords.contains(tok) ||
@@ -378,8 +424,7 @@ List<_Hit> _referencedResults(String q, List<CuraDocument> docs) {
 RoutedAnswer? _tryValueLookup(String q, QueryDate qd, List<CuraDocument> docs) {
   final hits = _referencedResults(q, docs);
   if (hits.isEmpty) {
-    // A recognised test with no reading on file: say so plainly rather than let
-    // the model invent a number.
+    // Known test, no reading — say so.
     final group = _firstTouchedGroup(q);
     if (group != null) {
       final test = _displayTestFor(group, q);
@@ -392,16 +437,16 @@ RoutedAnswer? _tryValueLookup(String q, QueryDate qd, List<CuraDocument> docs) {
     return null;
   }
 
-  // More than one distinct test referenced → ambiguous; let the model handle it.
+  // Multiple tests → model.
   final keys = hits.map((h) => h.key).toSet();
   if (keys.length != 1) return null;
 
-  // If the question named a date, keep only readings from that date.
+  // Filter to named date.
   List<_Hit> scoped = hits;
   if (qd.hasAny) {
     final onDate = hits.where((h) => _dateMatches(h.doc.date, qd)).toList();
     if (onDate.isEmpty) {
-      // We do have this test, just not from that date — say so precisely.
+      // Have the test, not that date.
       final label = _inSentence(hits.first.result.label);
       final date = _queryDateLabel(qd);
       return RoutedAnswer(
@@ -413,7 +458,7 @@ RoutedAnswer? _tryValueLookup(String q, QueryDate qd, List<CuraDocument> docs) {
     scoped = onDate;
   }
 
-  // Newest first; de-duplicate identical (date,value) readings.
+  // Newest first; dedupe date+value.
   scoped.sort((a, b) => b.doc.date.compareTo(a.doc.date));
   final seen = <String>{};
   final unique = <_Hit>[];
@@ -425,7 +470,7 @@ RoutedAnswer? _tryValueLookup(String q, QueryDate qd, List<CuraDocument> docs) {
   final primary = unique.first;
   final label = _inSentence(primary.result.label);
 
-  // A single reading, or the user asked for the latest one → one clean sentence.
+  // Single/latest → one sentence.
   final wantsSingle = unique.length == 1 || _hasLatest(q) || qd.day != null;
   if (wantsSingle) {
     final clause = _rangeClause(primary.result);
@@ -446,7 +491,7 @@ RoutedAnswer? _tryValueLookup(String q, QueryDate qd, List<CuraDocument> docs) {
     );
   }
 
-  // Several readings → a natural enumeration, newest first.
+  // Several → list, newest first.
   final shown = unique.take(5).toList();
   final parts = shown
       .map((h) => '${h.result.valueWithUnit} (${h.doc.dateLabel})')
@@ -525,9 +570,7 @@ class _CollectionScope {
   final bool specific;
 }
 
-/// Matches free-form collections such as "liver function tests" without asking
-/// the small model to count. An unknown qualifier deliberately yields no matches
-/// instead of silently widening to every saved document.
+/// Free-form collection scope; unknown qualifier → no match.
 _CollectionScope _collectionScope(
   String q,
   QueryDate? qd,
@@ -540,8 +583,7 @@ _CollectionScope _collectionScope(
     return _CollectionScope(base, specific: false);
   }
 
-  // queryTerms first, so a stopword ("were", "other") can't pose as a qualifier
-  // we then fail to match and scope to nothing.
+  // Prefer queryTerms so stopwords aren't qualifiers.
   final terms = queryTerms(q)
       .where(
         (t) =>
@@ -573,7 +615,7 @@ RoutedAnswer? _tryLatest(
   List<CuraDocument> docs,
 ) {
   if (!_hasLatest(q)) return null;
-  // Needs to be about a document/report/results, not a stray "last" elsewhere.
+  // Must be about a report, not a stray "last".
   if (!RegExp(
         r'\b(report|reports|document|documents|record|records|results?|'
         r'test|tests|scan|scans|prescription|prescriptions|receipt|'
@@ -584,8 +626,7 @@ RoutedAnswer? _tryLatest(
   }
 
   final scope = _collectionScope(q, qd, type, modalityLabel, docs);
-  // _collectionScope returns a const empty list when a free-form qualifier has
-  // no match, so copy before sorting or a miss throws instead of falling through.
+  // Copy: empty const list from a miss can't be sorted.
   final pool = [...scope.docs]..sort((a, b) => b.date.compareTo(a.date));
   if (pool.isEmpty) {
     final noun = scope.specific
@@ -621,9 +662,7 @@ RoutedAnswer? _tryLatest(
 // Receipt amounts ("how much did I pay at Meadowlark?")
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A money question needs a payment verb or a bill noun *and* an amount ask,
-/// so "show my receipts" still lists and "how much is my hemoglobin" (already
-/// consumed by the value lookup) can never reach here by accident.
+/// Money ask: payment/bill word + amount ask.
 final _moneyVerbRe = RegExp(
   r'\b(pay|paid|spend|spent|cost|costs?|charged?|charges?|price)\b',
 );
@@ -632,9 +671,7 @@ final _amountAskRe = RegExp(
   r'\bhow much\b|\btotal\b|\bamount\b|\bwhat (was|is|did)\b',
 );
 
-/// The stored breakdown's total: the parser writes it last as "Total"; a
-/// hand-edited record may only have some other summary row, which still beats
-/// answering nothing. Null when the receipt has no usable amount.
+/// Receipt total (or best summary row); null if none.
 String? _receiptTotal(CuraDocument d) {
   for (final r in d.results.reversed) {
     if (r.needsReview) continue;
@@ -655,8 +692,7 @@ RoutedAnswer? _tryReceiptAmount(
   if (!_moneyVerbRe.hasMatch(q) && !_moneyNounRe.hasMatch(q)) return null;
   if (!_amountAskRe.hasMatch(q)) return null;
 
-  // Receipts in the asked date window, keyword-narrowed only when the words
-  // match something; an unmatched qualifier keeps the full pool.
+  // Date window; keyword-narrow only on hits.
   var pool = _filter(docs, DocumentType.receipt, qd);
   if (pool.isEmpty) {
     return RoutedAnswer(
@@ -665,8 +701,7 @@ RoutedAnswer? _tryReceiptAmount(
       protectedFacts: ['receipts', if (qd.hasAny) _queryDateLabel(qd)],
     );
   }
-  // Rank on the question minus its money wording, so a generic "bill" can't
-  // masquerade as a vendor keyword.
+  // Rank without money words as vendor keywords.
   final rq = q.replaceAll(_moneyNounRe, ' ').replaceAll(_moneyVerbRe, ' ');
   final ranked = rankDocuments(rq, pool);
   if (ranked.isNotEmpty && ranked.first.score > 0) {
@@ -683,8 +718,7 @@ RoutedAnswer? _tryReceiptAmount(
     for (final d in pool)
       if (_receiptTotal(d) != null) d,
   ];
-  // Receipts exist but none carry a parsed amount → the model, with the full
-  // document text, is the safer answerer.
+  // No parsed amount → model.
   if (priced.isEmpty) return null;
 
   final wantsLatestOnly = _hasLatest(q);
@@ -699,8 +733,7 @@ RoutedAnswer? _tryReceiptAmount(
     );
   }
 
-  // Several bills: list each amount, and add the sum when the question sounds
-  // aggregate and every amount parses in the same currency style.
+  // List amounts; sum if aggregate + same currency.
   const cap = 6;
   final shown = priced.take(cap).toList();
   final lines = shown
@@ -740,7 +773,7 @@ RoutedAnswer? _tryReceiptAmount(
   );
 }
 
-/// "3360.00" → "3,360.00" (western grouping — a display nicety only).
+/// "3360.00" → "3,360.00".
 String _groupThousands(String fixed) {
   final parts = fixed.split('.');
   final digits = parts[0];
@@ -770,8 +803,7 @@ RoutedAnswer? _tryCount(
   final noun = scope.specific
       ? (n == 1 ? 'matching record' : 'matching records')
       : _typeNoun(type, n, modalityLabel: modalityLabel);
-  // The matching reports, newest first, for the source cards. The set is exact:
-  // an unscopable qualifier already yielded an empty pool above.
+  // Matching reports, newest first.
   final ordered = [...pool]..sort((a, b) => b.date.compareTo(a.date));
   final cards = ordered;
   return RoutedAnswer(
@@ -817,8 +849,7 @@ RoutedAnswer? _tryListOrDateDoc(
     r'\b(prescriptions|receipts|reports|documents|records|medications|'
     r'tests|scans|results|labs)\b',
   ).hasMatch(q);
-  // A bare plural is a list request only when a type or modality is named too;
-  // vague "my results" falls through to the model.
+  // Plural list needs a type/modality.
   final wantsList =
       _listKeywords.any(q.contains) ||
       qd.hasAny ||
@@ -843,8 +874,7 @@ RoutedAnswer? _tryListOrDateDoc(
     );
   }
 
-  // A single match the user is clearly after (a specific day, or a singular
-  // "report") → show that document with its contents.
+  // One clear match → show it.
   final singularAsked =
       qd.day != null ||
       RegExp(
@@ -904,8 +934,7 @@ List<CuraDocument> _filter(
 }) {
   return docs.where((d) {
     if (type != null && d.type != type) return false;
-    // A named imaging modality ("ultrasound") narrows within the imaging type, so
-    // "how many ultrasounds" doesn't count every imaging report.
+    // Narrow imaging by modality.
     if (modalityLabel != null &&
         !documentMatchesModalityLabel(d, modalityLabel)) {
       return false;
@@ -915,7 +944,7 @@ List<CuraDocument> _filter(
   }).toList();
 }
 
-/// True when [date] is consistent with every part the question pinned down.
+/// [date] matches every pinned date part.
 bool _dateMatches(DateTime date, QueryDate qd) {
   if (qd.month != null && date.month != qd.month) return false;
   if (qd.year != null && date.year != qd.year) return false;
@@ -923,8 +952,7 @@ bool _dateMatches(DateTime date, QueryDate qd) {
   return true;
 }
 
-/// Lowercases a label's first letter for mid-sentence use, but leaves acronyms
-/// (LDL, TSH) and mixed-case names (HbA1c) untouched.
+/// Sentence-case label; leave acronyms alone.
 String _inSentence(String label) {
   if (label.isEmpty) return label;
   final hasInnerUpper = label.substring(1).contains(RegExp(r'[A-Z]'));
@@ -932,8 +960,7 @@ String _inSentence(String label) {
   return label[0].toLowerCase() + label.substring(1);
 }
 
-/// ", within/above/below the normal range (…)" when the range can be parsed,
-/// else a neutral "(reference range: …)" — never a guessed judgment.
+/// Range clause; never guess a judgment.
 String _rangeClause(DocumentResult r) {
   final range = r.range;
   if (range == null || range.trim().isEmpty) return '';
@@ -966,8 +993,7 @@ String _resultsInline(List<DocumentResult> results, {int cap = 4}) {
   return results.length > cap ? '$take, …' : take;
 }
 
-/// Singular or plural noun for a document type. A [modalityLabel] wins over the
-/// generic noun, so the answer reads "2 ultrasounds", not "2 imaging reports".
+/// Type noun; [modalityLabel] wins if set.
 String _typeNoun(DocumentType? type, int n, {String? modalityLabel}) {
   final singular = n == 1;
   if (modalityLabel != null) {
@@ -1009,7 +1035,7 @@ const _monthTitles = [
   'December',
 ];
 
-/// "September 3, 2024" / "September 2024" / "September" / "2024".
+/// Human date from pinned parts.
 String _queryDateLabel(QueryDate qd) {
   final month = qd.month != null ? _monthTitles[qd.month! - 1] : null;
   if (month != null && qd.day != null && qd.year != null) {
@@ -1021,7 +1047,7 @@ String _queryDateLabel(QueryDate qd) {
   return '${qd.year}';
 }
 
-/// "a, b and c" — natural list join.
+/// "a, b and c".
 String _joinList(List<String> items) {
   if (items.length <= 1) return items.join();
   if (items.length == 2) return '${items[0]} and ${items[1]}';

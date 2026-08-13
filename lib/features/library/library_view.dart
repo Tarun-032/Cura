@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../app/theme/app_colors.dart';
 import '../reminders/widgets/reminder_bell.dart';
 import '../reminders/widgets/today_medicines_card.dart';
+import '../trends/trends_card.dart';
 import 'document.dart';
 import 'document_search.dart';
 import 'widgets/ask_records_card.dart';
@@ -17,12 +18,14 @@ class LibraryView extends StatefulWidget {
     required this.homeAskExample,
     required this.onOpenDocument,
     required this.onOpenAsk,
+    required this.onOpenTrends,
   });
 
   final List<CuraDocument> documents;
   final String homeAskExample;
   final ValueChanged<CuraDocument> onOpenDocument;
   final VoidCallback onOpenAsk;
+  final VoidCallback onOpenTrends;
 
   @override
   State<LibraryView> createState() => _LibraryViewState();
@@ -119,6 +122,12 @@ class _LibraryViewState extends State<LibraryView> {
         // Hides itself when empty.
         const TodayMedicinesCard(),
 
+        // Trends card when something repeats.
+        TrendsCard(
+          documents: widget.documents,
+          onTap: widget.onOpenTrends,
+        ),
+
         const SizedBox(height: 22),
         Text(_searching ? 'Results' : 'Recent', style: textTheme.bodySmall)
             .animate()
@@ -150,7 +159,7 @@ class _LibraryViewState extends State<LibraryView> {
       document: doc,
       onTap: () => widget.onOpenDocument(doc),
     );
-    // Only first screenful animates (avoids blank below fold).
+    // Animate first screenful only.
     if (_searching || i > 6) return row;
     return row
         .animate()

@@ -137,6 +137,20 @@ String? resultsSummary(List<DocumentResult> results) {
   return '$count · ${flagged.length} outside the normal range: $names';
 }
 
+/// Parsed value+unit, or null if not a plain measurement.
+({double number, String? unit})? resultNumber(DocumentResult r) {
+  final measured = _parseValue(r.value);
+  if (measured == null) return null;
+  return (number: measured.number, unit: r.unit ?? measured.unit);
+}
+
+/// Parsed range bounds (same as [verdictFor]).
+({double? low, double? high})? rangeBounds(DocumentResult r) =>
+    _parseRange(r.range, resultNumber(r)?.unit);
+
+/// Canonical unit; null matches anything.
+String? canonicalUnit(String? u) => u == null ? null : _canonUnit(u);
+
 RangeVerdict _compare(DocumentResult r) {
   final measured = _parseValue(r.value);
   if (measured == null) return RangeVerdict.unknown;
@@ -212,8 +226,23 @@ RangeVerdict _compare(DocumentResult r) {
 bool _unitsDisagree(String? a, String? b) =>
     a != null && b != null && _canonUnit(a) != _canonUnit(b);
 
-String _canonUnit(String u) =>
-    u.toLowerCase().replaceAll(RegExp(r'[^a-z0-9%µ]'), '');
+/// Fold lab spellings of one unit (not real conversions).
+const _sameUnit = {
+  'gmdl': 'gdl',
+  'gmsdl': 'gdl',
+  'gm%': 'gdl',
+  'g%': 'gdl',
+  'mgsdl': 'mgdl',
+  'mg%': 'mgdl',
+  'ul': 'iul',
+  'unitsl': 'iul',
+  'uiuml': 'µiuml',
+};
+
+String _canonUnit(String u) {
+  final stripped = u.toLowerCase().replaceAll(RegExp(r'[^a-z0-9%µ]'), '');
+  return _sameUnit[stripped] ?? stripped;
+}
 
 bool _looksLikeUnit(String s) =>
     s.length <= 14 &&

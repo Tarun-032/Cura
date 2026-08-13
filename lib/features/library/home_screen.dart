@@ -19,6 +19,7 @@ import '../scan/scan_service.dart';
 import '../scan/summary_rewriter.dart';
 import '../settings/settings_view.dart';
 import '../timeline/timeline_view.dart';
+import '../trends/trends_screen.dart';
 import 'document.dart';
 import 'document_detail_screen.dart';
 import 'empty_state_view.dart';
@@ -438,6 +439,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() => _currentTab = tab);
   }
 
+  void _openTrends() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TrendsScreen(onOpenDocument: _openDocument),
+      ),
+    );
+  }
+
   Future<void> _openAsk() async {
     // Guard against double taps.
     if (_openingAsk) return;
@@ -580,13 +589,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         homeAskExample: widget.homeAskExample,
                         onOpenDocument: _openDocument,
                         onOpenAsk: _openAsk,
+                        onOpenTrends: _openTrends,
                       ),
                 // Timeline.
                 TimelineView(
                   documents: documents,
                   onOpenDocument: _openDocument,
                 ),
-                // Ask slot — never shown (Ask opens as a pushed screen).
+                // Ask slot (pushed screen).
                 const SizedBox.shrink(),
                 // Settings.
                 SettingsView(

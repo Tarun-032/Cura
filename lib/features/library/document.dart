@@ -2,13 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme/app_colors.dart';
 
-/// The kind of medical document. Drives the row's icon, label and category tint.
-/// `visit` is a manually typed visit note (no source document) — it is only
-/// offered on the manual-entry form, never by the scan/import type selector.
+/// Document kind. `visit` is manual-entry only.
 enum DocumentType { lab, prescription, receipt, discharge, imaging, visit }
 
 extension DocumentTypeDisplay on DocumentType {
-  /// Human label shown in metadata and the type selector.
+  /// Display label.
   String get label => switch (this) {
     DocumentType.lab => 'Lab report',
     DocumentType.prescription => 'Prescription',
@@ -18,7 +16,7 @@ extension DocumentTypeDisplay on DocumentType {
     DocumentType.visit => 'Visit note',
   };
 
-  /// Thin line icon for the category tile.
+  /// Category icon.
   IconData get icon => switch (this) {
     DocumentType.lab => Icons.science_outlined,
     DocumentType.prescription => Icons.medication_outlined,
@@ -28,7 +26,7 @@ extension DocumentTypeDisplay on DocumentType {
     DocumentType.visit => Icons.event_note_outlined,
   };
 
-  /// Icon color inside the category tile.
+  /// Icon accent.
   Color get accentColor => switch (this) {
     DocumentType.lab => AppColors.catLab,
     DocumentType.prescription => AppColors.mint,
@@ -38,7 +36,7 @@ extension DocumentTypeDisplay on DocumentType {
     DocumentType.visit => AppColors.catVisit,
   };
 
-  /// Soft tile fill (the category accent at low alpha).
+  /// Soft tile fill.
   Color get tileColor => switch (this) {
     DocumentType.lab => AppColors.catLab.withValues(alpha: 0.16),
     DocumentType.prescription => AppColors.mint.withValues(alpha: 0.16),
@@ -48,15 +46,13 @@ extension DocumentTypeDisplay on DocumentType {
     DocumentType.visit => AppColors.catVisit.withValues(alpha: 0.16),
   };
 
-  /// True for narrative reports that should store a Summary, not Results rows
-  /// (imaging findings, discharge narrative, typed visit notes — not lab
-  /// tables or bill lines).
+  /// Narrative types → Summary, not Results rows.
   bool get isSummaryShaped =>
       this == DocumentType.imaging ||
       this == DocumentType.discharge ||
       this == DocumentType.visit;
 
-  /// Section heading for the structured card: Summary / Breakdown / Results.
+  /// Card section heading.
   String get structuredSectionLabel => switch (this) {
     DocumentType.imaging || DocumentType.discharge => 'Summary',
     DocumentType.receipt => 'Breakdown',
@@ -64,8 +60,7 @@ extension DocumentTypeDisplay on DocumentType {
   };
 }
 
-/// A single label→value row inside a document's Results card, with an optional
-/// reference range (e.g. "13–17 gm%") shown faintly beneath the value.
+/// One Results row (label, value, optional range).
 class DocumentResult {
   const DocumentResult(
     this.label,
@@ -91,8 +86,7 @@ class DocumentResult {
   }
 }
 
-/// A single stored medical document, as the UI sees it. The Drift row is mapped
-/// to and from this shape in [DocumentRepository].
+/// UI document shape ([DocumentRepository] ↔ Drift).
 class CuraDocument {
   const CuraDocument({
     required this.id,
@@ -114,42 +108,34 @@ class CuraDocument {
   final DocumentType type;
   final DateTime date;
 
-  /// Full text read off the page (shown on review; fallback on detail).
+  /// OCR text.
   final String extractedText;
 
-  /// Structured label→value rows (shown in the detail Results card).
+  /// Structured Results rows.
   final List<DocumentResult> results;
 
-  /// Optional footnote under the Results rows.
+  /// Footnote under Results.
   final String? resultsNote;
 
-  /// The model's readable rewrite of [resultsNote], written in the background
-  /// after a scan is saved. Display only: [resultsNote] stays verbatim because
-  /// Ask searches and quotes it.
+  /// Display rewrite of [resultsNote]; Ask uses the verbatim note.
   final String? summaryRewrite;
 
-  /// 'pending', 'retry', or null once the rewrite is settled either way.
+  /// Rewrite state: pending | retry | null.
   final String? summaryState;
 
-  /// Free-form tags, e.g. ["bloodwork", "annual"].
+  /// Free-form tags.
   final List<String> tags;
 
-  /// On-device paths to the scanned page images for this document, in order. A
-  /// record can span several pages (a multi-page report or bill), all kept under
-  /// this one document.
+  /// Page image paths, in order.
   final List<String> pages;
 
-  /// Private path to an untouched user-imported PDF. Rendered [pages] remain
-  /// the OCR/preview source, while this file is copied byte-for-byte on export.
-  /// Camera-created records and pre-v4 database rows leave it null.
+  /// Imported PDF path; null for camera / legacy rows.
   final String? sourcePdfPath;
 
-  /// The first page image, or null when there are none — a convenience for
-  /// single-image callers (thumbnails, deletion of a lone image).
+  /// First page image, or null.
   String? get primaryImage => pages.isEmpty ? null : pages.first;
 
-  /// Returns a copy with the given fields replaced (used when editing and when
-  /// AI structuring fills in the results).
+  /// Copy with replaced fields.
   CuraDocument copyWith({
     String? title,
     DocumentType? type,
@@ -188,31 +174,32 @@ class CuraDocument {
     );
   }
 
-  static const List<String> _months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
+  /// "Apr 12, 2025".
+  String get dateLabel => '${shortDate(date)}, ${date.year}';
 
-  /// e.g. "Apr 12, 2025" — formatted without the intl package.
-  String get dateLabel =>
-      '${_months[date.month - 1]} ${date.day}, ${date.year}';
-
-  /// e.g. "Apr 12" — month + day, no year (timeline node labels).
-  String get shortDateLabel => '${_months[date.month - 1]} ${date.day}';
+  /// "Apr 12" (no year).
+  String get shortDateLabel => shortDate(date);
 }
 
-/// Sample documents for UI previews and tests.
-/// (Not `const` because `DateTime` literals aren't compile-time constants.)
+const _months = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/// "Apr 12".
+String shortDate(DateTime d) => '${_months[d.month - 1]} ${d.day}';
+
+/// Sample docs for previews/tests (not const: DateTime).
 final List<CuraDocument> sampleDocuments = [
   CuraDocument(
     id: 'sample-cbc',

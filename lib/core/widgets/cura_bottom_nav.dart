@@ -6,7 +6,7 @@ import 'cura_spark.dart';
 /// Bottom navigation tabs.
 enum CuraTab { home, timeline, ask, settings }
 
-/// Bottom navigation bar. Use with a centered FAB (centerDocked).
+/// Bottom nav; pair with centerDocked FAB.
 class CuraBottomNavBar extends StatelessWidget {
   const CuraBottomNavBar({
     super.key,
@@ -104,6 +104,8 @@ class _NavItem extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontFamily: 'PlusJakartaSans',
                 fontSize: 11.5,
