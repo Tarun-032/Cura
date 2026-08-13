@@ -118,6 +118,9 @@ class _Readings extends StatelessWidget {
   }
 }
 
+String _breakable(String s) =>
+    s.replaceAll(RegExp('[\u00A0\u2007\u2009\u202F\u2060\uFEFF]'), ' ');
+
 /// Chart note block; hidden until ready.
 class _TrendNote extends ConsumerWidget {
   const _TrendNote({required this.series});
@@ -141,7 +144,7 @@ class _TrendNote extends ConsumerWidget {
       error: (e, _) => e is TrendNoteFailure
           ? Text(e.message, style: line?.copyWith(color: AppColors.secondary))
           : null,
-      data: (text) => text == null ? null : Text(text, style: line),
+      data: (text) => text == null ? null : Text(_breakable(text), style: line),
     );
     if (body == null) return const SizedBox.shrink();
 
@@ -152,7 +155,17 @@ class _TrendNote extends ConsumerWidget {
         const SizedBox(height: 22),
         Text('Summary', style: textTheme.bodySmall),
         const SizedBox(height: 12),
-        body,
+
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.hairline),
+          ),
+          child: body,
+        ),
       ],
     );
   }
