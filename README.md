@@ -34,10 +34,15 @@ medical history to anyone.
 
 - Reads a document with the camera or imports a PDF you already have.
 - Pulls out the title, type, date and results table automatically.
+- Flags a lab value as High or Low against the range printed on the page.
 - Files it into a searchable library and a chronological timeline.
 - Rewrites a scraped report summary into plain prose in the background, after saving.
-- Answers questions about your records, citing the reports the answer came from. Stop
-  an answer mid-sentence, or long press your last question to copy or re-ask it.
+- Sets medicine reminders from a scanned prescription, reading the dose times off the
+  printed directions.
+- Charts the same test across reports once it appears in two or more of them.
+- Answers questions about your records, showing a card for every report an answer
+  names and marking which model replied. Stop an answer mid-sentence, or long press
+  your last question to copy or re-ask it.
 - Exports any record, or your whole library, back out as a PDF.
 
 **What it is for**
@@ -62,7 +67,7 @@ Download the APK from the [Releases](../../releases) page.
 | | |
 |---|---|
 | Android version | 8.0 (Oreo) or newer |
-| Download | 58 MB |
+| Download | about 61 MB |
 | Free space | about 2 GB, since the AI model is fetched separately on first run |
 
 Cura is not on the Play Store, so Android will ask permission before installing a file
@@ -132,12 +137,26 @@ optional app lock. Every step can be skipped.
 | Ask | Settings | Models |
 |:---:|:---:|:---:|
 | <img src="screenshots/11-ask.jpg" width="240" height="520"> | <img src="screenshots/12-settings.jpg" width="240" height="520"> | <img src="screenshots/13-settings-models.jpg" width="240" height="520"> |
-| Ask about your records,<br>answers cite their source | Data controls, app lock,<br>and engine settings | Switch or delete models,<br>see which engine is live |
+| Ask about your records, with a<br>card for every report cited | Data controls, app lock,<br>and engine settings | Switch or delete models,<br>see which engine is live |
 
 | Storage |
 |:---:|
 | <img src="screenshots/14-storage.jpg" width="240" height="520"> |
 | See exactly what Cura is using on your phone |
+
+### Medicine reminders
+
+| Set a reminder | How long | Every dose |
+|:---:|:---:|:---:|
+| <img src="screenshots/15-prescription-reminders.jpg" width="240" height="520"> | <img src="screenshots/16-reminder-duration.jpg" width="240" height="520"> | <img src="screenshots/17-reminders.jpg" width="240" height="520"> |
+| Remind on one medicine,<br>or all of them at once | Cura asks only when the page<br>does not say how long | Every time editable,<br>each dose switchable |
+
+### Trends
+
+| The same test, over time | A single measure |
+|:---:|:---:|
+| <img src="screenshots/18-trends.jpg" width="240" height="520"> | <img src="screenshots/19-trend-detail.jpg" width="240" height="520"> |
+| Charts once a measure appears<br>in two or more reports | The chart, a written summary,<br>and every report it came from |
 
 ---
 
@@ -158,6 +177,13 @@ is thrown away, and a row the geometry already read is never overwritten.
 The upside is that a value in Cura is a value literally printed on your report. It
 cannot be invented, because nothing is generating it.
 
+**Out of range values are flagged the same way.** A High or Low badge is computed
+from the reference range printed beside the value, not from any general medical
+knowledge. A value sitting exactly on a boundary stays in range. If the lab printed
+its own arrow and that arrow disagrees with the arithmetic, Cura shows no badge at
+all rather than a confident wrong one, because no flag beats a wrong flag. Edit a
+value on the review screen and it is re-checked immediately.
+
 > ### Please read before you trust a scan
 >
 > Because the reader is geometric and rule based, it depends on the page looking like
@@ -169,6 +195,98 @@ cannot be invented, because nothing is generating it.
 > anything that came out wrong. **Check the values against the original document
 > every time before you save.** Treat the paper report, not Cura, as the source of
 > truth.
+
+---
+
+## Medicine reminders
+
+Once a prescription is saved, each medicine gets a **Remind** button, and the
+Medicines header gets **Remind for all**.
+
+**The times come off the page, not from a model.** The printed directions are read
+by rule, the same way the results table is:
+
+| Printed on the prescription | Reminder times |
+|---|---|
+| `1-0-1` | 8:00 AM, 9:00 PM |
+| `1-1-1` | 8:00 AM, 2:00 PM, 9:00 PM |
+| `OD`, "once daily" | 8:00 AM |
+| `BD`, "twice daily" | 8:00 AM, 9:00 PM |
+| `TDS`, "thrice daily" | 8:00 AM, 2:00 PM, 9:00 PM |
+| `QID` | 8:00 AM, 2:00 PM, 6:00 PM, 10:00 PM |
+| `HS`, "at night" | 10:00 PM |
+| `every 6 hours`, `q6h` | every 6 hours from 8:00 AM |
+
+**An as needed medicine is never scheduled.** `SOS`, `PRN`, `stat` and "as needed"
+are recognized and deliberately produce no reminder.
+
+**How long the course runs** comes from the page too, from `x 5 days`, `for 2 weeks`
+or the `5/7` shorthand. When the prescription does not say, Cura asks you once
+instead of guessing, and you can override any single medicine in that same sheet.
+
+**What it does not read.** `b/f` and `a/f`, before and after food, are not
+interpreted. Only the dosing pattern sets the times, so a medicine meant for after
+food will still remind you at the default hour. Adjust it if that matters.
+
+Every time is editable, every dose has its own on/off switch, and you can delete one
+medicine's doses or every reminder on a prescription. Notifications carry **Taken**
+and **Snooze 15m**, medicines due at the same time arrive as one notification rather
+than five, and the last day of a course gets its own notice an hour after the final
+dose. The home screen carries a bell with a badge and a **Today's medicines** card
+with tick offs and how far through the course you are.
+
+**Nothing about this touches the network.** Reminders are scheduled by your phone and
+delivered by your phone. There is no push service and no server. Medicine names and
+dose times never leave the device. Cura asks for notification and alarm permission,
+and for permission to restart after a reboot so your reminders survive one. If exact
+alarms are unavailable, reminders still work, they just fire approximately.
+
+Reminders live in the same local database as everything else. Deleting a document
+deletes its reminders, wiping your data wipes them, and a course that has finished is
+cleared automatically the next time you open the app.
+
+---
+
+## Trends
+
+**The same test, over time.** A measure starts charting once it appears in two or
+more of your reports. Bills and prescriptions are skipped, and so is any row still
+flagged for review.
+
+**Matching the same test across reports is deterministic.** Cura folds known synonyms
+together, so haemoglobin, hemoglobin, Hb and Hgb are one chart, as are SGPT and ALT,
+or urea and BUN. It also knows what must stay apart: fasting and postprandial glucose
+are separate charts, as are direct and indirect bilirubin, because merging them would
+be a lie.
+
+**Units are compared, never converted.** If one report prints a measure in a unit
+that does not match the others, that reading is dropped from the chart rather than
+rescaled into place. Cura would rather show you fewer points than a converted number
+it had to invent.
+
+Seven common markers chart by default, haemoglobin, platelet count, bilirubin, SGPT,
+HbA1c, glucose and CRP. Anything else that repeats is one tap away under **Track a
+measure**.
+
+The chart is drawn by the app itself, with no charting library. The shaded band is
+the normal range printed on your most recent report, and a dot turns red when that
+reading sits outside it. **Points are spaced evenly rather than by time**, so the gap
+between two dots is not proportional to the gap between two dates. The real date is
+printed under every point.
+
+**The summary under the chart is the one place a model writes prose about your
+numbers**, and it is fenced in tightly. It is handed only the measure name, the unit,
+the range and the readings themselves. It never sees your report titles. Every number
+it writes back has to already appear in those facts, or the whole summary is thrown
+away and asked for again. A model may phrase, never renumber. The result is cached
+until your readings, your engine or the prompt actually change.
+
+If you have turned the cloud engine on, this crosses the same privacy filter as
+everything else, and it fails closed: if the filter strips the request to nothing,
+nothing is sent.
+
+Under the summary, **Where these came from** lists every report the readings were
+taken from, newest first. Tap one to open it.
 
 ---
 
@@ -187,7 +305,13 @@ GGUF builds are offered, quantized Q4_K_M, all requiring no login or token:
 | Qwen 2.5 0.5B Instruct (lighter) | 398 MB |
 
 Onboarding measures your phone's RAM and cores and recommends one, but the choice is
-always yours. Models can be switched or deleted later in Settings.
+always yours. Models can be switched or deleted later in Settings. The download runs
+in the background with a progress notification, and can be cancelled.
+
+Qwen3 can reason step by step, so with it selected Ask gains a **Think harder**
+toggle that gives the model a larger budget to work in. It is off by default,
+because thinking costs time and most questions do not need it. The other two models
+do not have it.
 
 **Where the model actually runs.** Mostly it does not. Counts, latest values, dates
 and lists are answered directly from the stored fields with no model at all, which is
@@ -261,6 +385,7 @@ numbers.
 | Lab, imaging, discharge summary | type, date, title |
 | Lab report only | the results table, **and only** when the OCR geometry was ambiguous or clearly missed rows, and every value can be matched back to the OCR |
 | Imaging, discharge, visit, prescription | after saving, the summary is rewritten for readability, from the scraped clinical sections only |
+| A charted measure | the sentences under a trend chart, written from the measure name, unit, range and readings alone, never the report titles |
 
 Everything else stays deterministic: prescription contents and bill amounts. Lab
 values are always read off the page, never written by a model. The narrative summary
@@ -287,6 +412,9 @@ Before any request leaves the phone, Cura minimizes it:
 4. **A summary rewrite** sends the scraped clinical sections and nothing else. No
    question you typed, no chat history, no page text. If the filter strips it to
    nothing, the request is abandoned rather than widened.
+5. **A trend summary** sends the measure name, its unit, its normal range and the
+   list of readings with their dates. Not the report titles, not the page text. It
+   is abandoned the same way if the filter empties it.
 
 On-device is never redacted, because nothing leaves the phone, and your stored
 documents always keep their full text.
@@ -311,8 +439,10 @@ you out of your own records.
 
 ## Your data stays yours
 
-- **Export** any single record or your entire library as a PDF.
-- **Delete** any record, or wipe everything, from Settings.
+- **Export** any single record or your entire library as a PDF. Export covers your
+  documents; reminders are not included in it.
+- **Delete** any record, or wipe everything, from Settings. Deleting a prescription
+  also cancels its reminders.
 - **See** exactly what is stored, broken down by models, documents, voice model and
   cache, and clear the cache at any time.
 - Documents live in the app's private storage. Uninstalling Cura removes them.
@@ -328,11 +458,16 @@ you out of your own records.
 | Database | Drift (SQLite) |
 | OCR | `google_mlkit_document_scanner`, `google_mlkit_text_recognition`, bundled and offline |
 | On-device LLM | `llama_flutter_android` (llama.cpp, GGUF, CPU, ARM64) |
-| Speech to text | `whisper_ggml` (whisper.cpp) |
+| Model download | `background_downloader`, with a progress notification and cancel |
+| Speech to text | `whisper_ggml` (whisper.cpp), microphone via `record` |
+| Reminders | `flutter_local_notifications`, scheduled in your zone with `timezone` and `flutter_timezone` |
+| App lock | `local_auth` (fingerprint, face, device PIN) |
 | Optional cloud | any OpenAI-compatible endpoint over `http` |
 | Secrets | `flutter_secure_storage` (Android Keystore) |
-| PDF | `pdf`, pure Dart and fully offline |
+| Settings | `shared_preferences`, for everything that is not a secret |
+| PDF | `pdf`, pure Dart and fully offline; `image` to downscale pages, `file_picker` for the save dialog |
 | Font | Plus Jakarta Sans, bundled locally so there is no runtime font fetch |
+| Intro clip | `video_player`, playing a bundled asset, never a fetch |
 
 ## Build it yourself
 
@@ -381,13 +516,16 @@ holds the screen, its state and its logic together.
 ```
 lib/
   app/theme/       colours, typography, the Material 3 theme
-  core/data/       the SQLite schema and the repositories that read it
+  core/data/       the SQLite schema and the repositories that read it,
+                   documents, chats and reminders
   core/widgets/    small widgets shared across features
   features/
     onboarding/    first run: engine choice, voice, app lock
     scan/          camera, OCR, and the rule-based parsers that read a page
     library/       the records list, search, and a single document's page
     timeline/      the same records in date order
+    reminders/     dose times read off a prescription, scheduled on-device
+    trends/        one measure across reports, charted and summarised
     ask/           the chat screen and its saved conversations
     ai/            answering questions: retrieval, the local model, and
                    remote/ for the optional cloud engine and its PII filters
@@ -402,6 +540,12 @@ Two folders carry most of the weight. **`scan/`** is where a photo becomes a rec
 it is deliberately free of AI: OCR reads the text, and rules and table geometry do the
 rest. **`ai/remote/`** is the boundary the cloud engine has to cross, and it is where
 every piece of personal information is stripped before a request can leave the phone.
+
+**`reminders/`** is model-free for the same reason `scan/` is. Dose times are parsed
+from the printed directions by rule, so a reminder can only ever repeat what the
+prescription says. **`trends/`** derives its charts from the stored results with no
+model either; the only model call in it writes the summary sentences, and every
+number in those has to match the readings first.
 
 ## Acknowledgements
 
